@@ -1967,7 +1967,6 @@ void MPSolverInterface::SetMIPParameters(const MPSolverParameters& param) {
     SetRelativeMipGap(
         param.GetDoubleParam(MPSolverParameters::RELATIVE_MIP_GAP));
   }
-  //SetHeurEmphasis(param.GetIntegerParam(MPSolverParameters::HEUREMPHASIS));
 }
 
 void MPSolverInterface::SetUnsupportedDoubleParam(
