@@ -24,12 +24,12 @@ ENTRYPOINT ["/usr/bin/bash", "--login", "-c"]
 CMD ["/usr/bin/bash", "--login"]
 # RUN g++ --version
 
-# Install CMake 3.25.2
+# Install CMake v3.26.4
 RUN ARCH=$(uname -m) \
-&& wget -q "https://cmake.org/files/v3.25/cmake-3.25.2-linux-${ARCH}.sh" \
-&& chmod a+x cmake-3.25.2-linux-${ARCH}.sh \
-&& ./cmake-3.25.2-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
-&& rm cmake-3.25.2-linux-${ARCH}.sh
+&& wget -q "https://cmake.org/files/v3.26/cmake-3.26.4-linux-${ARCH}.sh" \
+&& chmod a+x cmake-3.26.4-linux-${ARCH}.sh \
+&& ./cmake-3.26.4-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
+&& rm cmake-3.26.4-linux-${ARCH}.sh
 
 # Install Swig 4.1.1
 RUN curl --location-trusted \
@@ -63,9 +63,13 @@ ENV JAVA_HOME=/usr/lib/jvm/java
 
 # Install Python
 RUN yum -y update \
-&& yum -y install python3 python3-devel python3-pip numpy \
+&& yum -y install \
+ rh-python38-python rh-python38-python-devel \
+ rh-python38-python-pip rh-python38-python-numpy \
 && yum clean all \
-&& rm -rf /var/cache/yum
+&& rm -rf /var/cache/yum \
+&& echo "source /opt/rh/rh-python38/enable" >> /etc/bashrc
+RUN python -m pip install absl-py mypy-protobuf
 
 ENV TZ=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
@@ -106,6 +110,7 @@ RUN make archive_cpp
 # .Net
 ## build
 FROM cpp_build AS dotnet_build
+ENV USE_DOTNET_CORE_31=ON
 RUN make detect_dotnet \
 && make dotnet JOBS=8
 ## archive

@@ -17,8 +17,10 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -32,15 +34,17 @@
 #include <vector>
 
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "ortools/base/adjustable_priority_queue.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/macros.h"
 #include "ortools/base/mathutil.h"
+#include "ortools/base/types.h"
 #include "ortools/constraint_solver/constraint_solver.h"
 #include "ortools/constraint_solver/constraint_solveri.h"
 #include "ortools/constraint_solver/routing.h"
 #include "ortools/constraint_solver/routing_index_manager.h"
+#include "ortools/constraint_solver/routing_utils.h"
 #include "ortools/util/bitset.h"
 
 namespace operations_research {
@@ -174,7 +178,7 @@ class IntVarFilteredHeuristic {
                           const std::vector<IntVar*>& secondary_vars,
                           LocalSearchFilterManager* filter_manager);
 
-  virtual ~IntVarFilteredHeuristic() = default;
+  virtual ~IntVarFilteredHeuristic() {}
 
   /// Builds a solution. Returns the resulting assignment if a solution was
   /// found, and nullptr otherwise.
@@ -209,6 +213,7 @@ class IntVarFilteredHeuristic {
   /// Modifies the current solution by setting the variable of index 'index' to
   /// value 'value'.
   void SetValue(int64_t index, int64_t value) {
+    DCHECK_LT(index, is_in_delta_.size());
     if (!is_in_delta_[index]) {
       delta_->FastAdd(vars_[index])->SetValue(value);
       delta_indices_.push_back(index);
@@ -226,9 +231,6 @@ class IntVarFilteredHeuristic {
   bool Contains(int64_t index) const {
     return assignment_->IntVarContainer().Element(index).Var() != nullptr;
   }
-  /// Returns the number of variables the decision builder is trying to
-  /// instantiate.
-  int Size() const { return vars_.size(); }
   /// Returns the variable of index 'index'.
   IntVar* Var(int64_t index) const { return vars_[index]; }
   /// Returns the index of a secondary var.
@@ -269,9 +271,8 @@ class RoutingFilteredHeuristic : public IntVarFilteredHeuristic {
  public:
   RoutingFilteredHeuristic(RoutingModel* model,
                            std::function<bool()> stop_search,
-                           LocalSearchFilterManager* filter_manager,
-                           bool omit_secondary_vars = true);
-  ~RoutingFilteredHeuristic() override = default;
+                           LocalSearchFilterManager* filter_manager);
+  ~RoutingFilteredHeuristic() override {}
   /// Builds a solution starting from the routes formed by the next accessor.
   const Assignment* BuildSolutionFromRoutes(
       const std::function<int64_t(int64_t)>& next_accessor);
@@ -298,6 +299,10 @@ class RoutingFilteredHeuristic : public IntVarFilteredHeuristic {
   bool VehicleIsEmpty(int vehicle) const {
     return Value(model()->Start(vehicle)) == model()->End(vehicle);
   }
+  void SetNext(int64_t node, int64_t next, int vehicle) {
+    SetValue(node, next);
+    if (HasSecondaryVars()) SetValue(SecondaryVarIndex(node), vehicle);
+  }
 
  private:
   /// Initializes the current solution with empty or partial vehicle routes.
@@ -317,7 +322,7 @@ class CheapestInsertionFilteredHeuristic : public RoutingFilteredHeuristic {
       std::function<int64_t(int64_t, int64_t, int64_t)> evaluator,
       std::function<int64_t(int64_t)> penalty_evaluator,
       LocalSearchFilterManager* filter_manager);
-  ~CheapestInsertionFilteredHeuristic() override = default;
+  ~CheapestInsertionFilteredHeuristic() override {}
 
  protected:
   struct NodeInsertion {
@@ -436,7 +441,7 @@ class GlobalCheapestInsertionFilteredHeuristic
       std::function<int64_t(int64_t)> penalty_evaluator,
       LocalSearchFilterManager* filter_manager,
       GlobalCheapestInsertionParameters parameters);
-  ~GlobalCheapestInsertionFilteredHeuristic() override = default;
+  ~GlobalCheapestInsertionFilteredHeuristic() override {}
   bool BuildSolutionInternal() override;
   std::string DebugString() const override {
     return "GlobalCheapestInsertionFilteredHeuristic";
@@ -568,7 +573,7 @@ class GlobalCheapestInsertionFilteredHeuristic
   /// NOTE: Assumes (DCHECKS) that
   /// UseEmptyVehicleTypeCuratorForVehicle(pair_entry.vehicle()) is true.
   bool InsertPairEntryUsingEmptyVehicleTypeCurator(
-      const absl::flat_hash_set<int>& pair_indices, PairEntry* const pair_entry,
+      const absl::flat_hash_set<int>& pair_indices, PairEntry* pair_entry,
       AdjustablePriorityQueue<PairEntry>* priority_queue,
       std::vector<PairEntries>* pickup_to_entries,
       std::vector<PairEntries>* delivery_to_entries);
@@ -608,6 +613,10 @@ class GlobalCheapestInsertionFilteredHeuristic
   void DetectUsedVehicles(std::vector<bool>* is_vehicle_used,
                           std::vector<int>* unused_vehicles,
                           absl::flat_hash_set<int>* used_vehicles);
+
+  /// Returns true of the vehicle's route is not empty or if the vehicle is the
+  /// representative of its class and type.
+  bool IsCheapestClassRepresentative(int vehicle) const;
 
   /// Inserts the (farthest_seeds_ratio_ * model()->vehicles()) nodes farthest
   /// from the start/ends of the available vehicle routes as seeds on their
@@ -720,7 +729,7 @@ class GlobalCheapestInsertionFilteredHeuristic
   /// Updates the pair entry's value and rearranges the priority queue
   /// accordingly.
   void UpdatePairEntry(
-      PairEntry* const pair_entry,
+      PairEntry* pair_entry,
       AdjustablePriorityQueue<PairEntry>* priority_queue) const;
   /// Computes and returns the insertion value of inserting 'pickup' and
   /// 'delivery' respectively after 'pickup_insert_after' and
@@ -768,16 +777,6 @@ class GlobalCheapestInsertionFilteredHeuristic
   /// 'node_entries'.
   void AddNodeEntry(int64_t node, int64_t insert_after, int vehicle,
                     bool all_vehicles, NodeEntryQueue* queue) const;
-
-  int64_t NumNonStartEndNodes() const {
-    return model()->Size() - model()->vehicles();
-  }
-
-  int64_t NumNeighbors() const {
-    return std::max(gci_params_.min_neighbors,
-                    MathUtil::FastInt64Round(gci_params_.neighbors_ratio *
-                                             NumNonStartEndNodes()));
-  }
 
   void ResetVehicleIndices() override {
     node_index_to_vehicle_.assign(node_index_to_vehicle_.size(), -1);
@@ -835,24 +834,155 @@ class GlobalCheapestInsertionFilteredHeuristic
   mutable EntryAllocator<PairEntry> pair_entry_allocator_;
 };
 
-// Generates insertion positions respecting structural constraints.
-class InsertionGenerator {
- public:
-  InsertionGenerator() = default;
-
-  struct PickupDeliveryInsertion {
-    int64_t insert_pickup_after;
-    int64_t insert_delivery_after;
-    int64_t value;
+// Holds sequences of insertions.
+// A sequence of insertions must be in the same path, each insertion must
+// take place either after the previously inserted node or further down the
+// path, never before.
+class InsertionSequenceContainer {
+ private:
+  // InsertionSequenceContainer holds all insertion sequences in the same vector
+  // contiguously, each insertion sequence is defined by a pair of bounds.
+  // Using Insertion* directly to delimit bounds would cause out-of-memory reads
+  // when the underlying vector<Insertion> is extended and reallocated,
+  // so this stores integer bounds in InsertionBounds to delimit sequences,
+  // and InsertionSequenceIterator translates those bounds to
+  // Insertion*-based ranges (InsertionSequence) on-the-fly when iterating over
+  // all sequences.
+  struct InsertionBounds {
+    size_t begin;
+    size_t end;
     int vehicle;
+    int64_t cost;
+    bool operator<(const InsertionBounds& other) const {
+      return std::tie(cost, vehicle, begin) <
+             std::tie(other.cost, other.vehicle, other.begin);
+    }
+    size_t Size() const { return end - begin; }
+  };
 
-    bool operator<(const PickupDeliveryInsertion& other) const {
-      return std::tie(value, insert_pickup_after, insert_delivery_after,
-                      vehicle) <
-             std::tie(other.value, other.insert_pickup_after,
-                      other.insert_delivery_after, other.vehicle);
+ public:
+  struct Insertion {
+    int pred;
+    int node;
+    bool operator==(const Insertion& other) const {
+      return pred == other.pred && node == other.node;
     }
   };
+
+  // Represents an insertion sequence as passed to AddInsertionSequence.
+  // This only allows to modify the cost, as a means to reorder sequences.
+  class InsertionSequence {
+   public:
+    InsertionSequence(Insertion* data, InsertionBounds* bounds)
+        : data_(data), bounds_(bounds) {}
+
+    bool operator!=(const InsertionSequence& other) const {
+      DCHECK_NE(data_, other.data_);
+      return bounds_ != other.bounds_;
+    }
+
+    const Insertion* begin() const { return data_ + bounds_->begin; }
+    const Insertion* end() const { return data_ + bounds_->end; }
+    size_t Size() const { return bounds_->Size(); }
+    int Vehicle() const { return bounds_->vehicle; }
+    int64_t Cost() const { return bounds_->cost; }
+    int64_t& Cost() { return bounds_->cost; }
+
+   private:
+    const Insertion* const data_;
+    InsertionBounds* const bounds_;
+  };
+  class InsertionSequenceIterator {
+   public:
+    InsertionSequenceIterator(Insertion* data, InsertionBounds* bounds)
+        : data_(data), bounds_(bounds) {}
+    bool operator!=(const InsertionSequenceIterator& other) const {
+      DCHECK_EQ(data_, other.data_);
+      return bounds_ != other.bounds_;
+    }
+    InsertionSequenceIterator& operator++() {
+      ++bounds_;
+      return *this;
+    }
+    InsertionSequence operator*() const { return {data_, bounds_}; }
+
+   private:
+    Insertion* data_;
+    InsertionBounds* bounds_;
+  };
+
+  // InsertionSequenceContainer is a range over insertion sequences.
+  InsertionSequenceIterator begin() {
+    return {insertions_.data(), insertion_bounds_.data()};
+  }
+  InsertionSequenceIterator end() {
+    return {insertions_.data(),
+            insertion_bounds_.data() + insertion_bounds_.size()};
+  }
+  // Returns the number of sequences of this container.
+  size_t Size() const { return insertion_bounds_.size(); }
+
+  // Adds an insertion sequence to the container.
+  // Passing an initializer_list allows deeper optimizations by the compiler
+  // for cases where the sequence has a compile-time fixed size.
+  void AddInsertionSequence(
+      int vehicle, std::initializer_list<Insertion> insertion_sequence) {
+    insertion_bounds_.push_back(
+        {.begin = insertions_.size(),
+         .end = insertions_.size() + insertion_sequence.size(),
+         .vehicle = vehicle,
+         .cost = 0});
+    insertions_.insert(insertions_.end(), insertion_sequence.begin(),
+                       insertion_sequence.end());
+  }
+
+  // Adds an insertion sequence to the container.
+  void AddInsertionSequence(int vehicle,
+                            const std::vector<Insertion>& insertion_sequence) {
+    insertion_bounds_.push_back(
+        {.begin = insertions_.size(),
+         .end = insertions_.size() + insertion_sequence.size(),
+         .vehicle = vehicle,
+         .cost = 0});
+    insertions_.insert(insertions_.end(), insertion_sequence.begin(),
+                       insertion_sequence.end());
+  }
+
+  // Similar to std::remove_if(), removes all sequences that match a predicate.
+  // This keeps original order, and removes selected sequences.
+  void RemoveIf(const std::function<bool(const InsertionSequence&)>& p) {
+    size_t from = 0;
+    size_t to = 0;
+    for (const InsertionSequence& sequence : *this) {
+      // TODO(user): Benchmark this against std::swap().
+      if (!p(sequence)) insertion_bounds_[to++] = insertion_bounds_[from];
+      ++from;
+    }
+    insertion_bounds_.resize(to);
+  }
+
+  // Sorts sequences according to (cost, vehicle).
+  // TODO(user): benchmark this against other ways to get insertion
+  // sequence in order, for instance sorting by index, separating {cost, index},
+  // making a heap.
+  void Sort() { std::sort(insertion_bounds_.begin(), insertion_bounds_.end()); }
+
+  // Removes all sequences.
+  void Clear() {
+    insertions_.clear();
+    insertion_bounds_.clear();
+  }
+
+ private:
+  std::vector<Insertion> insertions_;
+  std::vector<InsertionBounds> insertion_bounds_;
+};
+
+// Generates insertion positions respecting structural constraints.
+class InsertionSequenceGenerator {
+ public:
+  InsertionSequenceGenerator() {}
+
   /// Generates insertions for a pickup and delivery pair in a multitour path:
   /// - a series of pickups may only start if all the deliveries of previous
   ///   pickups have been performed.
@@ -871,10 +1001,10 @@ class InsertionGenerator {
   ///   are made on the subpath of paired nodes, all extensions to the original
   ///   path that conserve order are equivalent.
   void AppendPickupDeliveryMultitourInsertions(
-      int pickup, const std::vector<int>& path,
+      int pickup, int delivery, int vehicle, const std::vector<int>& path,
       const std::vector<bool>& node_is_pickup,
       const std::vector<bool>& node_is_delivery,
-      std::vector<PickupDeliveryInsertion>& insertions);
+      InsertionSequenceContainer& insertions);
 
  private:
   // Information[i] describes the insertion between path[i] and path[i+1].
@@ -884,7 +1014,21 @@ class InsertionGenerator {
   std::vector<int> prev_increase_;  // previous position after pickup.
 };
 
-/// Filter-base decision builder which builds a solution by inserting
+struct PickupDeliveryInsertion {
+  int64_t insert_pickup_after;
+  int64_t insert_delivery_after;
+  int64_t value;
+  int vehicle;
+
+  bool operator<(const PickupDeliveryInsertion& other) const {
+    return std::tie(value, insert_pickup_after, insert_delivery_after,
+                    vehicle) < std::tie(other.value, other.insert_pickup_after,
+                                        other.insert_delivery_after,
+                                        other.vehicle);
+  }
+};
+
+/// Filter-based decision builder which builds a solution by inserting
 /// nodes at their cheapest position. The cost of a position is computed
 /// an arc-based cost callback. Node selected for insertion are considered in
 /// decreasing order of distance to the start/ends of the routes, i.e. farthest
@@ -897,8 +1041,9 @@ class LocalCheapestInsertionFilteredHeuristic
       RoutingModel* model, std::function<bool()> stop_search,
       std::function<int64_t(int64_t, int64_t, int64_t)> evaluator,
       RoutingSearchParameters::PairInsertionStrategy pair_insertion_strategy,
-      LocalSearchFilterManager* filter_manager);
-  ~LocalCheapestInsertionFilteredHeuristic() override = default;
+      LocalSearchFilterManager* filter_manager,
+      BinCapacities* bin_capacities = nullptr);
+  ~LocalCheapestInsertionFilteredHeuristic() override {}
   bool BuildSolutionInternal() override;
   std::string DebugString() const override {
     return "LocalCheapestInsertionFilteredHeuristic";
@@ -921,9 +1066,9 @@ class LocalCheapestInsertionFilteredHeuristic
 
   /// Computes the possible simultaneous insertion positions of the pair
   /// 'pickup' and 'delivery'. Sorts them according to the current cost
-  /// evaluator. If a timeout is detected returns std::nullopt.
-  std::optional<std::vector<InsertionGenerator::PickupDeliveryInsertion>>
-  ComputeEvaluatorSortedPairPositions(int64_t pickup, int64_t delivery);
+  /// evaluator.
+  std::vector<PickupDeliveryInsertion> ComputeEvaluatorSortedPairPositions(
+      int pickup, int delivery);
 
   // Tries to insert any alternative of the given pair,
   // ordered by cost of pickup insertion, then by cost of delivery insertion.
@@ -946,10 +1091,12 @@ class LocalCheapestInsertionFilteredHeuristic
   bool update_start_end_distances_per_node_;
   std::vector<std::vector<StartEndValue>> start_end_distances_per_node_;
   const RoutingSearchParameters::PairInsertionStrategy pair_insertion_strategy_;
-  InsertionGenerator insertion_generator_;
+  InsertionSequenceContainer insertion_container_;
+  InsertionSequenceGenerator insertion_generator_;
 
   // Marks whether a node has already been tried for insertion.
   std::vector<bool> visited_;
+  BinCapacities* const bin_capacities_;
 };
 
 /// Filtered-base decision builder based on the addition heuristic, extending
@@ -959,7 +1106,7 @@ class CheapestAdditionFilteredHeuristic : public RoutingFilteredHeuristic {
   CheapestAdditionFilteredHeuristic(RoutingModel* model,
                                     std::function<bool()> stop_search,
                                     LocalSearchFilterManager* filter_manager);
-  ~CheapestAdditionFilteredHeuristic() override = default;
+  ~CheapestAdditionFilteredHeuristic() override {}
   bool BuildSolutionInternal() override;
 
  private:
@@ -1005,7 +1152,7 @@ class EvaluatorCheapestAdditionFilteredHeuristic
       RoutingModel* model, std::function<bool()> stop_search,
       std::function<int64_t(int64_t, int64_t)> evaluator,
       LocalSearchFilterManager* filter_manager);
-  ~EvaluatorCheapestAdditionFilteredHeuristic() override = default;
+  ~EvaluatorCheapestAdditionFilteredHeuristic() override {}
   std::string DebugString() const override {
     return "EvaluatorCheapestAdditionFilteredHeuristic";
   }
@@ -1029,7 +1176,7 @@ class ComparatorCheapestAdditionFilteredHeuristic
       RoutingModel* model, std::function<bool()> stop_search,
       Solver::VariableValueComparator comparator,
       LocalSearchFilterManager* filter_manager);
-  ~ComparatorCheapestAdditionFilteredHeuristic() override = default;
+  ~ComparatorCheapestAdditionFilteredHeuristic() override {}
   std::string DebugString() const override {
     return "ComparatorCheapestAdditionFilteredHeuristic";
   }
@@ -1076,7 +1223,17 @@ class SavingsFilteredHeuristic : public RoutingFilteredHeuristic {
   bool BuildSolutionInternal() override;
 
  protected:
-  typedef std::pair</*saving*/ int64_t, /*saving index*/ int64_t> Saving;
+  struct Saving {
+    int64_t saving;
+    unsigned int vehicle_type : 20;
+    unsigned int before_node : 22;
+    unsigned int after_node : 22;
+    bool operator<(const Saving& other) const {
+      return std::tie(saving, vehicle_type, before_node, after_node) <
+             std::tie(other.saving, other.vehicle_type, other.before_node,
+                      other.after_node);
+    }
+  };
 
   template <typename S>
   class SavingsContainer;
@@ -1084,21 +1241,6 @@ class SavingsFilteredHeuristic : public RoutingFilteredHeuristic {
   virtual double ExtraSavingsMemoryMultiplicativeFactor() const = 0;
 
   virtual void BuildRoutesFromSavings() = 0;
-
-  /// Returns the cost class from a saving.
-  int64_t GetVehicleTypeFromSaving(const Saving& saving) const {
-    return saving.second / size_squared_;
-  }
-  /// Returns the "before node" from a saving.
-  int64_t GetBeforeNodeFromSaving(const Saving& saving) const {
-    return (saving.second % size_squared_) / Size();
-  }
-  /// Returns the "after node" from a saving.
-  int64_t GetAfterNodeFromSaving(const Saving& saving) const {
-    return (saving.second % size_squared_) % Size();
-  }
-  /// Returns the saving value from a saving.
-  int64_t GetSavingValue(const Saving& saving) const { return saving.first; }
 
   /// Finds the best available vehicle of type "type" to start a new route to
   /// serve the arc before_node-->after_node.
@@ -1139,8 +1281,9 @@ class SavingsFilteredHeuristic : public RoutingFilteredHeuristic {
   /// Builds a saving from a saving value, a vehicle type and two nodes.
   Saving BuildSaving(int64_t saving, int vehicle_type, int before_node,
                      int after_node) const {
-    return std::make_pair(saving, vehicle_type * size_squared_ +
-                                      before_node * Size() + after_node);
+    return {saving, static_cast<unsigned int>(vehicle_type),
+            static_cast<unsigned int>(before_node),
+            static_cast<unsigned int>(after_node)};
   }
 
   /// Computes and returns the maximum number of (closest) neighbors to consider
@@ -1149,7 +1292,6 @@ class SavingsFilteredHeuristic : public RoutingFilteredHeuristic {
   int64_t MaxNumNeighborsPerNode(int num_vehicle_types) const;
 
   const SavingsParameters savings_params_;
-  int64_t size_squared_;
 
   friend class SavingsFilteredHeuristicTestPeer;
 };
@@ -1162,7 +1304,7 @@ class SequentialSavingsFilteredHeuristic : public SavingsFilteredHeuristic {
                                      LocalSearchFilterManager* filter_manager)
       : SavingsFilteredHeuristic(model, std::move(stop_search), parameters,
                                  filter_manager) {}
-  ~SequentialSavingsFilteredHeuristic() override = default;
+  ~SequentialSavingsFilteredHeuristic() override {}
   std::string DebugString() const override {
     return "SequentialSavingsFilteredHeuristic";
   }
@@ -1184,7 +1326,7 @@ class ParallelSavingsFilteredHeuristic : public SavingsFilteredHeuristic {
                                    LocalSearchFilterManager* filter_manager)
       : SavingsFilteredHeuristic(model, std::move(stop_search), parameters,
                                  filter_manager) {}
-  ~ParallelSavingsFilteredHeuristic() override = default;
+  ~ParallelSavingsFilteredHeuristic() override {}
   std::string DebugString() const override {
     return "ParallelSavingsFilteredHeuristic";
   }
@@ -1230,7 +1372,7 @@ class ChristofidesFilteredHeuristic : public RoutingFilteredHeuristic {
                                 std::function<bool()> stop_search,
                                 LocalSearchFilterManager* filter_manager,
                                 bool use_minimum_matching);
-  ~ChristofidesFilteredHeuristic() override = default;
+  ~ChristofidesFilteredHeuristic() override {}
   bool BuildSolutionInternal() override;
   std::string DebugString() const override {
     return "ChristofidesFilteredHeuristic";

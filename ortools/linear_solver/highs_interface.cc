@@ -36,7 +36,7 @@ namespace operations_research {
 
 class HighsInterface : public MPSolverInterface {
  public:
-  explicit HighsInterface(MPSolver* const solver, bool solve_as_a_mip);
+  explicit HighsInterface(MPSolver* solver, bool solve_as_a_mip);
   ~HighsInterface() override;
 
   // ----- Solve -----
@@ -50,13 +50,12 @@ class HighsInterface : public MPSolverInterface {
   void SetVariableBounds(int index, double lb, double ub) override;
   void SetVariableInteger(int index, bool integer) override;
   void SetConstraintBounds(int index, double lb, double ub) override;
-  void AddRowConstraint(MPConstraint* const ct) override;
-  void AddVariable(MPVariable* const var) override;
-  void SetCoefficient(MPConstraint* const constraint,
-                      const MPVariable* const variable, double new_value,
-                      double old_value) override;
-  void ClearConstraint(MPConstraint* const constraint) override;
-  void SetObjectiveCoefficient(const MPVariable* const variable,
+  void AddRowConstraint(MPConstraint* ct) override;
+  void AddVariable(MPVariable* var) override;
+  void SetCoefficient(MPConstraint* constraint, const MPVariable* variable,
+                      double new_value, double old_value) override;
+  void ClearConstraint(MPConstraint* constraint) override;
+  void SetObjectiveCoefficient(const MPVariable* variable,
                                double coefficient) override;
   void SetObjectiveOffset(double value) override;
   void ClearObjective() override;
@@ -151,7 +150,7 @@ MPSolver::ResultStatus HighsInterface::Solve(const MPSolverParameters& param) {
   sync_status_ = SOLUTION_SYNCHRONIZED;
   result_status_ = static_cast<MPSolver::ResultStatus>(response->status());
   LOG_IF(ERROR, DEBUG_MODE && !response->has_solver_specific_info())
-    << *response;
+      << *response;
   // if (!solve_log_.ParseFromString(response->solver_specific_info())) {
   //   LOG(DFATAL) << "Unable to parse Highs's SolveLog from
   //   solver_specific_info";

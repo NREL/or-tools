@@ -24,7 +24,9 @@
 #include "absl/base/attributes.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "ortools/base/logging.h"
 #include "ortools/sat/cp_model.pb.h"
@@ -55,7 +57,7 @@ class PresolveContext;
 // bunch of places.
 class SavedLiteral {
  public:
-  SavedLiteral() {}
+  SavedLiteral() = default;
   explicit SavedLiteral(int ref) : ref_(ref) {}
   int Get(PresolveContext* context) const;
 
@@ -70,7 +72,7 @@ class SavedLiteral {
 // general affine for the linear1 involving an absolute value.
 class SavedVariable {
  public:
-  SavedVariable() {}
+  SavedVariable() = default;
   explicit SavedVariable(int ref) : ref_(ref) {}
   int Get() const;
 
@@ -137,6 +139,14 @@ class PresolveContext {
   int64_t MaxOf(const LinearExpressionProto& expr) const;
   bool IsFixed(const LinearExpressionProto& expr) const;
   int64_t FixedValue(const LinearExpressionProto& expr) const;
+
+  // Returns a positive constant factor that divides the expression.
+  // Currently, it only works with expression with 0 or 1 term.
+  int64_t ExpressionDivisor(const LinearExpressionProto& expr) const;
+
+  // Divide the expression in place by 'divisor'. It will DCHECK that 'divisor'
+  // divides all constants.
+  void DivideExpression(LinearExpressionProto* expr, int64_t divisor) const;
 
   // Accepts any proto with two parallel vector .vars() and .coeffs(), like
   // LinearConstraintProto or ObjectiveProto or LinearExpressionProto but beware
@@ -225,7 +235,7 @@ class PresolveContext {
   // This function always return false. It is just a way to make a little bit
   // more sure that we abort right away when infeasibility is detected.
   ABSL_MUST_USE_RESULT bool NotifyThatModelIsUnsat(
-      const std::string& message = "") {
+      absl::string_view message = "") {
     // TODO(user): Report any explanation for the client in a nicer way?
     SOLVER_LOG(logger_, "INFEASIBLE: '", message, "'");
     DCHECK(!is_unsat_);

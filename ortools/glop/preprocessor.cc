@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <iomanip>
 #include <ios>
@@ -27,6 +28,7 @@
 #include <vector>
 
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "ortools/base/iterator_adaptors.h"
 #include "ortools/base/strong_vector.h"
 #include "ortools/glop/revised_simplex.h"
@@ -145,7 +147,7 @@ bool MainLpPreprocessor::Run(LinearProgram* lp) {
 #undef RUN_PREPROCESSOR
 
 void MainLpPreprocessor::RunAndPushIfRelevant(
-    std::unique_ptr<Preprocessor> preprocessor, const std::string& name,
+    std::unique_ptr<Preprocessor> preprocessor, absl::string_view name,
     TimeLimit* time_limit, LinearProgram* lp) {
   RETURN_IF_NULL(preprocessor);
   RETURN_IF_NULL(time_limit);
@@ -3392,7 +3394,7 @@ void DoubletonEqualityRowPreprocessor::RecoverSolution(
   // There is always an order that make this matrix triangular. We start with a
   // singleton column which fix its corresponding row and then work on the
   // square submatrix left. We can always start and continue, because if we take
-  // the first substitued row of the current submatrix, if its deleted column
+  // the first substituted row of the current submatrix, if its deleted column
   // was in the submatrix we have a singleton column. If it is outside, we have
   // 2 n - 1 entries for a matrix with n columns, so one must be singleton.
   //

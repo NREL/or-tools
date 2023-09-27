@@ -51,7 +51,7 @@ std::string CpSolverResponseStats(const CpSolverResponse& response,
 /**
  * Solves the given CpModelProto.
  *
- * This advanced API accept a Model* which allows to access more adavanced
+ * This advanced API accept a Model* which allows to access more advanced
  * features by configuring some classes in the Model before solve.
  *
  * For instance:
@@ -105,6 +105,10 @@ std::function<SatParameters(Model*)> NewSatParameters(
 #endif  // !__PORTABLE_PLATFORM__
 std::function<SatParameters(Model*)> NewSatParameters(
     const SatParameters& parameters);
+
+// TODO(user): Clean this up.
+/// Solves a CpModelProto without any processing. Only used for unit tests.
+void LoadAndSolveCpModelForTest(const CpModelProto& model_proto, Model* model);
 
 }  // namespace sat
 }  // namespace operations_research

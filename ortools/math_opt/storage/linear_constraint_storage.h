@@ -23,9 +23,9 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/meta/type_traits.h"
 #include "absl/strings/string_view.h"
-#include "absl/log/check.h"
 #include "ortools/base/strong_int.h"
 #include "ortools/math_opt/model.pb.h"
 #include "ortools/math_opt/model_update.pb.h"
@@ -173,7 +173,7 @@ class LinearConstraintStorage {
   };
 
   std::vector<LinearConstraintId> ConstraintsFrom(
-      const LinearConstraintId start) const;
+      LinearConstraintId start) const;
 
   void AppendConstraint(LinearConstraintId constraint,
                         LinearConstraintsProto* proto) const;

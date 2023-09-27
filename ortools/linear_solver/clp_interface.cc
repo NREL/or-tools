@@ -12,6 +12,7 @@
 // limitations under the License.
 
 //
+#if defined(USE_CLP) || defined(USE_CBC)
 
 #include <algorithm>
 #include <cstdint>
@@ -30,8 +31,6 @@
 #include "ortools/base/timer.h"
 #include "ortools/linear_solver/linear_solver.h"
 
-#if defined(USE_CLP) || defined(USE_CBC)
-
 #undef PACKAGE
 #undef VERSION
 #include "ClpConfig.h"
@@ -44,7 +43,7 @@ namespace operations_research {
 class CLPInterface : public MPSolverInterface {
  public:
   // Constructor that takes a name for the underlying CLP solver.
-  explicit CLPInterface(MPSolver* const solver);
+  explicit CLPInterface(MPSolver* solver);
   ~CLPInterface() override;
 
   // Sets the optimization direction (min/max).
@@ -64,18 +63,17 @@ class CLPInterface : public MPSolverInterface {
   void SetConstraintBounds(int row_index, double lb, double ub) override;
 
   // Add constraint incrementally.
-  void AddRowConstraint(MPConstraint* const ct) override;
+  void AddRowConstraint(MPConstraint* ct) override;
   // Add variable incrementally.
-  void AddVariable(MPVariable* const var) override;
+  void AddVariable(MPVariable* var) override;
   // Change a coefficient in a constraint.
-  void SetCoefficient(MPConstraint* const constraint,
-                      const MPVariable* const variable, double new_value,
-                      double old_value) override;
+  void SetCoefficient(MPConstraint* constraint, const MPVariable* variable,
+                      double new_value, double old_value) override;
   // Clear a constraint from all its terms.
-  void ClearConstraint(MPConstraint* const constraint) override;
+  void ClearConstraint(MPConstraint* constraint) override;
 
   // Change a coefficient in the linear objective.
-  void SetObjectiveCoefficient(const MPVariable* const variable,
+  void SetObjectiveCoefficient(const MPVariable* variable,
                                double coefficient) override;
   // Change the constant term in the linear objective.
   void SetObjectiveOffset(double offset) override;

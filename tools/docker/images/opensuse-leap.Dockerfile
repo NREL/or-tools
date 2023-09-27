@@ -14,12 +14,12 @@ ENV CC=gcc-11 CXX=g++-11
 ENTRYPOINT ["/usr/bin/bash", "-c"]
 CMD ["/usr/bin/bash"]
 
-# Install CMake 3.25.2
+# Install CMake v3.26.4
 RUN ARCH=$(uname -m) \
-&& wget -q "https://cmake.org/files/v3.25/cmake-3.25.2-linux-${ARCH}.sh" \
-&& chmod a+x cmake-3.25.2-linux-${ARCH}.sh \
-&& ./cmake-3.25.2-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
-&& rm cmake-3.25.2-linux-${ARCH}.sh
+&& wget -q "https://cmake.org/files/v3.26/cmake-3.26.4-linux-${ARCH}.sh" \
+&& chmod a+x cmake-3.26.4-linux-${ARCH}.sh \
+&& ./cmake-3.26.4-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
+&& rm cmake-3.26.4-linux-${ARCH}.sh
 
 # Install SWIG
 RUN zypper refresh \
@@ -57,9 +57,9 @@ RUN zypper install -y java-1_8_0-openjdk java-1_8_0-openjdk-devel maven \
 && zypper clean -a
 
 # Install Python
-RUN zypper install -y python3-devel python3-pip python3-wheel \
+RUN zypper install -y python311-devel python311-pip \
 && zypper clean -a
-#RUN python3 -m pip install absl-py mypy-protobuf
+RUN python3.11 -m pip install absl-py mypy-protobuf
 
 ################
 ##  OR-TOOLS  ##
@@ -97,6 +97,7 @@ RUN make archive_cpp
 # .Net
 ## build
 FROM cpp_build AS dotnet_build
+ENV USE_DOTNET_CORE_31=ON
 RUN make detect_dotnet \
 && make dotnet JOBS=8
 ## archive

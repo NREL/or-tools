@@ -5,38 +5,38 @@
 | MacOS    | [![Status][macos_cpp_svg]][macos_cpp_link] | [![Status][macos_python_svg]][macos_python_link] | [![Status][macos_java_svg]][macos_java_link] | [![Status][macos_dotnet_svg]][macos_dotnet_link] |
 | Windows  | [![Status][windows_cpp_svg]][windows_cpp_link] | [![Status][windows_python_svg]][windows_python_link] | [![Status][windows_java_svg]][windows_java_link] | [![Status][windows_dotnet_svg]][windows_dotnet_link] |
 
-[linux_cpp_svg]: https://github.com/google/or-tools/actions/workflows/make_linux_cpp.yml/badge.svg?branch=main
-[linux_cpp_link]: https://github.com/google/or-tools/actions/workflows/make_linux_cpp.yml
-[linux_python_svg]: https://github.com/google/or-tools/actions/workflows/make_linux_python.yml/badge.svg?branch=main
-[linux_python_link]: https://github.com/google/or-tools/actions/workflows/make_linux_python.yml
-[linux_java_svg]: https://github.com/google/or-tools/actions/workflows/make_linux_java.yml/badge.svg?branch=main
-[linux_java_link]: https://github.com/google/or-tools/actions/workflows/make_linux_java.yml
-[linux_dotnet_svg]: https://github.com/google/or-tools/actions/workflows/make_linux_dotnet.yml/badge.svg?branch=main
-[linux_dotnet_link]: https://github.com/google/or-tools/actions/workflows/make_linux_dotnet.yml
+[linux_cpp_svg]: ./../../../actions/workflows/amd64_linux_make_cpp.yml/badge.svg?branch=main
+[linux_cpp_link]: ./../../../actions/workflows/amd64_linux_make_cpp.yml
+[linux_python_svg]: ./../../../actions/workflows/amd64_linux_make_python.yml/badge.svg?branch=main
+[linux_python_link]: ./../../../actions/workflows/amd64_linux_make_python.yml
+[linux_java_svg]: ./../../../actions/workflows/amd64_linux_make_java.yml/badge.svg?branch=main
+[linux_java_link]: ./../../../actions/workflows/amd64_linux_make_java.yml
+[linux_dotnet_svg]: ./../../../actions/workflows/amd64_linux_make_dotnet.yml/badge.svg?branch=main
+[linux_dotnet_link]: ./../../../actions/workflows/amd64_linux_make_dotnet.yml
 
-[macos_cpp_svg]: https://github.com/google/or-tools/actions/workflows/make_macos_cpp.yml/badge.svg?branch=main
-[macos_cpp_link]: https://github.com/google/or-tools/actions/workflows/make_macos_cpp.yml
-[macos_python_svg]: https://github.com/google/or-tools/actions/workflows/make_macos_python.yml/badge.svg?branch=main
-[macos_python_link]: https://github.com/google/or-tools/actions/workflows/make_macos_python.yml
-[macos_java_svg]: https://github.com/google/or-tools/actions/workflows/make_macos_java.yml/badge.svg?branch=main
-[macos_java_link]: https://github.com/google/or-tools/actions/workflows/make_macos_java.yml
-[macos_dotnet_svg]: https://github.com/google/or-tools/actions/workflows/make_macos_dotnet.yml/badge.svg?branch=main
-[macos_dotnet_link]: https://github.com/google/or-tools/actions/workflows/make_macos_dotnet.yml
+[macos_cpp_svg]: ./../../../actions/workflows/amd64_macos_make_cpp.yml/badge.svg?branch=main
+[macos_cpp_link]: ./../../../actions/workflows/amd64_macos_make_cpp.yml
+[macos_python_svg]: ./../../../actions/workflows/amd64_macos_make_python.yml/badge.svg?branch=main
+[macos_python_link]: ./../../../actions/workflows/amd64_macos_make_python.yml
+[macos_java_svg]: ./../../../actions/workflows/amd64_macos_make_java.yml/badge.svg?branch=main
+[macos_java_link]: ./../../../actions/workflows/amd64_macos_make_java.yml
+[macos_dotnet_svg]: ./../../../actions/workflows/amd64_macos_make_dotnet.yml/badge.svg?branch=main
+[macos_dotnet_link]: ./../../../actions/workflows/amd64_macos_make_dotnet.yml
 
-[windows_cpp_svg]: https://github.com/google/or-tools/actions/workflows/make_windows_cpp.yml/badge.svg?branch=main
-[windows_cpp_link]: https://github.com/google/or-tools/actions/workflows/make_windows_cpp.yml
-[windows_python_svg]: https://github.com/google/or-tools/actions/workflows/make_windows_python.yml/badge.svg?branch=main
-[windows_python_link]: https://github.com/google/or-tools/actions/workflows/make_windows_python.yml
-[windows_java_svg]: https://github.com/google/or-tools/actions/workflows/make_windows_java.yml/badge.svg?branch=main
-[windows_java_link]: https://github.com/google/or-tools/actions/workflows/make_windows_java.yml
-[windows_dotnet_svg]: https://github.com/google/or-tools/actions/workflows/make_windows_dotnet.yml/badge.svg?branch=main
-[windows_dotnet_link]: https://github.com/google/or-tools/actions/workflows/make_windows_dotnet.yml
+[windows_cpp_svg]: ./../../../actions/workflows/amd64_windows_make_cpp.yml/badge.svg?branch=main
+[windows_cpp_link]: ./../../../actions/workflows/amd64_windows_make_cpp.yml
+[windows_python_svg]: ./../../../actions/workflows/amd64_windows_make_python.yml/badge.svg?branch=main
+[windows_python_link]: ./../../../actions/workflows/amd64_windows_make_python.yml
+[windows_java_svg]: ./../../../actions/workflows/amd64_windows_make_java.yml/badge.svg?branch=main
+[windows_java_link]: ./../../../actions/workflows/amd64_windows_make_java.yml
+[windows_dotnet_svg]: ./../../../actions/workflows/amd64_windows_make_dotnet.yml/badge.svg?branch=main
+[windows_dotnet_link]: ./../../../actions/workflows/amd64_windows_make_dotnet.yml
 
 Dockers [Alpine, Archlinux, Centos, Debian, Fedora, OpenSuse, Ubuntu]x[C++,
 Python, Java, .Net]: [![Status][docker_svg]][docker_link]
 
-[docker_svg]: https://github.com/google/or-tools/actions/workflows/make_docker.yml/badge.svg?branch=main
-[docker_link]: https://github.com/google/or-tools/actions/workflows/make_docker.yml
+[docker_svg]: ./../../../actions/workflows/amd64_docker_make.yml/badge.svg?branch=main
+[docker_link]: ./../../../actions/workflows/amd64_docker_make.yml
 
 ## Introduction
 <nav for="make"> |
@@ -56,27 +56,30 @@ You'll need:
 
 ## Dependencies
 
-OR-Tools depends on severals mandatory libraries. You can compile them all using
-the target `third_party` or you can compile few of them and give the
-installation directory to the others using the Make variable below.
+OR-Tools depends on several mandatory libraries, either as infrastructure or as
+optimization solvers. You can either compile all of these dependencies using the
+target `third_party` or compile some of them on your own and give their
+installation directories to the others using the Make variables below.
 
-* ZLIB (`UNIX_ZLIB_DIR` or `WINDOWS_ZLIB_DIR`),
+* zlib (`UNIX_ZLIB_DIR` or `WINDOWS_ZLIB_DIR`),
 * Google Abseil-cpp (`UNIX_ABSL_DIR` or `WINDOWS_ABSL_DIR`),
 * Google Protobuf (`UNIX_PROTOBUF_DIR` or `WINDOWS_PROTOBUF_DIR`),
 * SCIP (`UNIX_SCIP_DIR` or `WINDOWS_SCIP_DIR`),
-* COIN-OR CoinUtils (`UNIX_COINUTILS_DIR` or `WINDOWS_COINUTILS_DIR`),
-* COIN-OR Osi (`UNIX_OSI_DIR` or `WINDOWS_OSI_DIR`),
-* COIN-OR Clp (`UNIX_CLP_DIR` or `WINDOWS_CLP_DIR`),
-* COIN-OR Cgl (`UNIX_CGL_DIR` or `WINDOWS_CGL_DIR`),
-* COIN-OR Cbc (`UNIX_CBC_DIR` or `WINDOWS_CBC_DIR`),
+* COIN-OR solvers:
+  * COIN-OR CoinUtils (`UNIX_COINUTILS_DIR` or `WINDOWS_COINUTILS_DIR`),
+  * COIN-OR Osi (`UNIX_OSI_DIR` or `WINDOWS_OSI_DIR`),
+  * COIN-OR Clp (`UNIX_CLP_DIR` or `WINDOWS_CLP_DIR`),
+  * COIN-OR Cgl (`UNIX_CGL_DIR` or `WINDOWS_CGL_DIR`),
+  * COIN-OR Cbc (`UNIX_CBC_DIR` or `WINDOWS_CBC_DIR`),
 
-OR-Tools also have few (ed compile time) optional solvers support (disabled by
-default):
+OR-Tools can also optionally (disabled by default) be compiled with support for
+the following third-party solvers:
 
 * CPLEX (`UNIX_CPLEX_DIR` or `WINDOWS_CPLEX_DIR`),
 * GLPK (`UNIX_GLPK_DIR` or `WINDOWS_GLPK_DIR`),
 * GUROBI (`UNIX_GUROBI_DIR` or `WINDOWS_GUROBI_DIR`),
 * XPRESS (`UNIX_XPRESS_DIR` or `WINDOWS_XPRESS_DIR`)
 
-**warning: Since these solvers require license and are proprietary, we can't
-test it on public CI and support can be broken.**
+**warning: Since these solvers are either proprietary (and require a specific
+license) or available under the GPL, we can't test them on public CI and their
+support may be broken.**

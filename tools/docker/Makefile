@@ -33,10 +33,10 @@ help:
 	@echo -e "\t${BOLD}test_archives${RESET}: Test each OR-Tools archives for all ${BOLD}<distro>${RESET} and ${BOLD}<lang>${RESET}."
 	@echo
 	@echo -e "${BOLD}PYTHON TARGETS${RESET}"
-	@echo -e "\t${BOLD}python${RESET}: Build alpine and manylinux2014 python 'ortools' wheel packages (3.7+)."
-	@echo -e "\t${BOLD}python_<platform>${RESET}: Build all python 'ortools' wheel packages (3.7+) for a specific platform."
-	@echo -e "\t${BOLD}python_<platform>_<step>${RESET}: Build all python 'ortools' wheel packages (3.7+) for a specific platform."
-	@echo -e "\t${BOLD}python_<target>_<step>${RESET}: Build python 'ortools' wheel packages (3.7+) for a specific target."
+	@echo -e "\t${BOLD}python${RESET}: Build alpine and manylinux2014 python 'ortools' wheel packages (3.8+)."
+	@echo -e "\t${BOLD}python_<platform>${RESET}: Build all python 'ortools' wheel packages (3.8+) for a specific platform."
+	@echo -e "\t${BOLD}python_<platform>_<step>${RESET}: Build all python 'ortools' wheel packages (3.8+) for a specific platform."
+	@echo -e "\t${BOLD}python_<target>_<step>${RESET}: Build python 'ortools' wheel packages (3.8+) for a specific target."
 	@echo -e "\t${BOLD}save_python_<target>${RESET}: Save python 'ortools' image."
 	@echo -e "\t${BOLD}clean_python_<target>${RESET}: Clean manylinux2014 and alpine python 'ortools' wheel packages."
 	@echo -e "\t${BOLD}sh_python_<target>${RESET}: Run a container using the python 'ortools' image."
@@ -54,11 +54,11 @@ help:
 	@echo -e "\t\t${BOLD}manylinux${RESET} (manylinux2014)"
 	@echo
 	@echo -e "\t${BOLD}<version>${RESET}:"
-	@echo -e "\t\t${BOLD}37${RESET} Python3.7"
 	@echo -e "\t\t${BOLD}38${RESET} Python3.8"
 	@echo -e "\t\t${BOLD}39${RESET} Python3.9"
 	@echo -e "\t\t${BOLD}310${RESET} Python3.10"
 	@echo -e "\t\t${BOLD}311${RESET} Python3.11"
+	@echo -e "\t\t${BOLD}312${RESET} Python3.12"
 	@echo
 	@echo -e "\t${BOLD}<step>${RESET}:"
 	@echo -e "\t\t${BOLD}env${RESET}"
@@ -91,22 +91,18 @@ help:
 	@echo -e "\t${BOLD}<distro>${RESET}:"
 	@echo -e "\t\t${BOLD}alpine-edge${RESET} (latest)"
 	@echo -e "\t\t${BOLD}archlinux${RESET} (latest)"
-	@echo -e "\t\t${BOLD}centos-8${RESET} (Centos Stream 8)"
 	@echo -e "\t\t${BOLD}centos-7${RESET} (Centos 7 LTS)"
 	@echo -e "\t\t${BOLD}debian-sid${RESET} (unstable)"
-	@echo -e "\t\t${BOLD}debian-11${RESET} (bullseye, latest)"
-	@echo -e "\t\t${BOLD}debian-10${RESET} (buster)"
-	@echo -e "\t\t${BOLD}fedora-38${RESET} (rawhide)"
-	@echo -e "\t\t${BOLD}fedora-37${RESET} (latest)"
-	@echo -e "\t\t${BOLD}fedora-36${RESET}"
-	@echo -e "\t\t${BOLD}fedora-35${RESET}"
-	@echo -e "\t\t${BOLD}fedora-34${RESET}"
-	@echo -e "\t\t${BOLD}fedora-33${RESET}"
-	@echo -e "\t\t${BOLD}opensuse-leap${RESET} (latest)"
-	@echo -e "\t\t${BOLD}ubuntu-22.10${RESET} (Ubuntu 22.10, rolling)"
+	@echo -e "\t\t${BOLD}debian-11${RESET} (bullseye)"
+#	@echo -e "\t\t${BOLD}debian-10${RESET} (buster)"
+#	@echo -e "\t\t${BOLD}fedora-39${RESET}"
+	@echo -e "\t\t${BOLD}fedora-38${RESET}"
+	@echo -e "\t\t${BOLD}fedora-37${RESET}"
+#	@echo -e "\t\t${BOLD}opensuse-leap${RESET} (latest)"
+	@echo -e "\t\t${BOLD}ubuntu-23.04${RESET} (Ubuntu 23.04, rolling)"
+	@echo -e "\t\t${BOLD}ubuntu-22.10${RESET} (Ubuntu 22.10)"
 	@echo -e "\t\t${BOLD}ubuntu-22.04${RESET} (Ubuntu 22.04 LTS, latest)"
 	@echo -e "\t\t${BOLD}ubuntu-20.04${RESET} (Ubuntu 20.04 LTS)"
-	@echo -e "\t\t${BOLD}ubuntu-18.04${RESET} (Ubuntu 18.04 LTS)"
 	@echo
 	@echo -e "\t${BOLD}<stage>${RESET}:"
 	@echo -e "\t\t${BOLD}env${RESET}"
@@ -120,7 +116,7 @@ help:
 	@echo -e "\t\t${BOLD}cpp${RESET} C++"
 	@echo -e "\t\t${BOLD}dotnet${RESET} .Net Core 3.1 and/or .Net 6.0 wrappers"
 	@echo -e "\t\t${BOLD}java${RESET} Java (JDK 8.0) wrappers"
-	@echo -e "\t\t${BOLD}python${RESET} Python 3.7+ wrappers"
+	@echo -e "\t\t${BOLD}python${RESET} Python 3.8+ wrappers"
 	@echo
 	@echo -e "\te.g. 'make sh_amd64_ubuntu-22.04_cpp_build'"
 	@echo -e "\te.g. 'make amd64_ubuntu-22.04_cpp_archive'"
@@ -202,7 +198,7 @@ cache/python: | cache
 	-mkdir $@
 
 ## MANYLINUX ##
-PYTHON_VERSIONS := 37 38 39 310 311
+PYTHON_VERSIONS := 38 39 310 311 312
 
 export/python/manylinux: | export/python
 	-mkdir -p $@
@@ -402,14 +398,15 @@ export/archives: | export
 PLATFORMS := amd64 arm64 # riscv64
 
 # Currently supported distro
+# opensuse-leap # repo broken
+# fedora-39 # Still waiting microsoft dotnet pkg
 DISTROS := \
  alpine-edge \
  archlinux \
- centos-7 centos-8 \
- debian-10 debian-11 debian-sid \
- fedora-33 fedora-34 fedora-35 fedora-36 fedora-37 fedora-38 \
- opensuse-leap \
- ubuntu-18.04 ubuntu-20.04 ubuntu-22.04 ubuntu-22.10
+ centos-7 \
+ debian-11 debian-sid \
+ fedora-37 fedora-38 \
+ ubuntu-20.04 ubuntu-22.04 ubuntu-22.10 ubuntu-23.04
 
 # List of stages
 STAGES := env devel
@@ -709,7 +706,7 @@ distclean: clean
 ##########################
 ##  MINIZINC CHALLENGE  ##
 ##########################
-MZN_TAG=or-tools-minizinc-challenge:2022v1
+MZN_TAG=or-tools-minizinc-challenge:2023v2
 
 .PHONY: minizinc-challenge
 minizinc-challenge: minizinc-challenge.Dockerfile

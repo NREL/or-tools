@@ -14,33 +14,112 @@
 #include "ortools/sat/routing_cuts.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/types/span.h"
+#include "ortools/base/cleanup.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/mathutil.h"
+#include "ortools/base/strong_vector.h"
+#include "ortools/graph/graph.h"
+#include "ortools/graph/max_flow.h"
+#include "ortools/sat/cuts.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/linear_constraint.h"
+#include "ortools/sat/linear_constraint_manager.h"
+#include "ortools/sat/model.h"
+#include "ortools/sat/sat_base.h"
+#include "ortools/sat/util.h"
+#include "ortools/util/strong_integers.h"
 
 namespace operations_research {
 namespace sat {
 
 namespace {
 
-// Add a cut of the form Sum_{outgoing arcs from S} lp >= rhs_lower_bound.
-//
-// Note that we used to also add the same cut for the incoming arcs, but because
-// of flow conservation on these problems, the outgoing flow is always the same
-// as the incoming flow, so adding this extra cut doesn't seem relevant.
-void AddOutgoingCut(
-    int num_nodes, int subset_size, const std::vector<bool>& in_subset,
-    const std::vector<int>& tails, const std::vector<int>& heads,
-    const std::vector<Literal>& literals,
-    const std::vector<double>& literal_lp_values, int64_t rhs_lower_bound,
-    const absl::StrongVector<IntegerVariable, double>& lp_values,
-    LinearConstraintManager* manager, Model* model) {
+class OutgoingCutHelper {
+ public:
+  OutgoingCutHelper(int num_nodes, int64_t capacity,
+                    absl::Span<const int64_t> demands,
+                    const std::vector<int>& tails,
+                    const std::vector<int>& heads,
+                    const std::vector<Literal>& literals,
+                    const std::vector<double>& literal_lp_values,
+                    const std::vector<ArcWithLpValue>& relevant_arcs,
+                    LinearConstraintManager* manager, Model* model)
+      : num_nodes_(num_nodes),
+        capacity_(capacity),
+        demands_(demands),
+        tails_(tails),
+        heads_(heads),
+        literals_(literals),
+        literal_lp_values_(literal_lp_values),
+        relevant_arcs_(relevant_arcs),
+        manager_(manager),
+        encoder_(model->GetOrCreate<IntegerEncoder>()) {
+    in_subset_.assign(num_nodes, false);
+
+    // Compute the total demands in order to know the minimum incoming/outgoing
+    // flow.
+    for (const int64_t demand : demands) total_demand_ += demand;
+  }
+
+  // Try to add an outgoing cut from the given subset.
+  bool TrySubsetCut(std::string name, absl::Span<const int> subset);
+
+  // If we look at the symmetrized version (tail <-> head = tail->head +
+  // head->tail) and we split all the edges between a subset of nodes S and the
+  // outside into a set A and the other d(S)\A, and |A| is odd, we have a
+  // constraint of the form:
+  //   "all edge of A at 1" => sum other edges >= 1.
+  // This is because a cycle or multiple-cycle must go in/out an even number
+  // of time. This enforced constraint simply linearize to:
+  //    sum_d(S)\A x_e + sum_A (1 - x_e) >= 1.
+  //
+  // Given a subset of nodes, it is easy to identify the best subset A of edge
+  // to consider.
+  bool TryBlossomSubsetCut(std::string name,
+                           const std::vector<ArcWithLpValue>& symmetrized_edges,
+                           absl::Span<const int> subset);
+
+ private:
+  // Add a cut of the form Sum_{outgoing arcs from S} lp >= rhs_lower_bound.
+  //
+  // Note that we used to also add the same cut for the incoming arcs, but
+  // because of flow conservation on these problems, the outgoing flow is always
+  // the same as the incoming flow, so adding this extra cut doesn't seem
+  // relevant.
+  bool AddOutgoingCut(std::string name, int subset_size,
+                      const std::vector<bool>& in_subset,
+                      int64_t rhs_lower_bound);
+
+  const int num_nodes_;
+  const int64_t capacity_;
+  const absl::Span<const int64_t> demands_;
+  const std::vector<int>& tails_;
+  const std::vector<int>& heads_;
+  const std::vector<Literal>& literals_;
+  const std::vector<double>& literal_lp_values_;
+  const std::vector<ArcWithLpValue>& relevant_arcs_;
+  LinearConstraintManager* manager_;
+  IntegerEncoder* encoder_;
+
+  int64_t total_demand_ = 0;
+  std::vector<bool> in_subset_;
+};
+
+bool OutgoingCutHelper::AddOutgoingCut(std::string name, int subset_size,
+                                       const std::vector<bool>& in_subset,
+                                       int64_t rhs_lower_bound) {
   // A node is said to be optional if it can be excluded from the subcircuit,
   // in which case there is a self-loop on that node.
   // If there are optional nodes, use extended formula:
@@ -51,18 +130,18 @@ void AddOutgoingCut(
   int num_optional_nodes_out = 0;
   int optional_loop_in = -1;
   int optional_loop_out = -1;
-  for (int i = 0; i < tails.size(); ++i) {
-    if (tails[i] != heads[i]) continue;
-    if (in_subset[tails[i]]) {
+  for (int i = 0; i < tails_.size(); ++i) {
+    if (tails_[i] != heads_[i]) continue;
+    if (in_subset[tails_[i]]) {
       num_optional_nodes_in++;
       if (optional_loop_in == -1 ||
-          literal_lp_values[i] < literal_lp_values[optional_loop_in]) {
+          literal_lp_values_[i] < literal_lp_values_[optional_loop_in]) {
         optional_loop_in = i;
       }
     } else {
       num_optional_nodes_out++;
       if (optional_loop_out == -1 ||
-          literal_lp_values[i] < literal_lp_values[optional_loop_out]) {
+          literal_lp_values_[i] < literal_lp_values_[optional_loop_out]) {
         optional_loop_out = i;
       }
     }
@@ -75,15 +154,15 @@ void AddOutgoingCut(
     rhs_lower_bound = 1;
   }
 
-  LinearConstraintBuilder outgoing(model, IntegerValue(rhs_lower_bound),
+  // We create the cut and rely on AddCut() for computing its efficacy and
+  // rejecting it if it is bad.
+  LinearConstraintBuilder outgoing(encoder_, IntegerValue(rhs_lower_bound),
                                    kMaxIntegerValue);
-  double sum_outgoing = 0.0;
 
   // Add outgoing arcs, compute outgoing flow.
-  for (int i = 0; i < tails.size(); ++i) {
-    if (in_subset[tails[i]] && !in_subset[heads[i]]) {
-      sum_outgoing += literal_lp_values[i];
-      CHECK(outgoing.AddLiteralTerm(literals[i], IntegerValue(1)));
+  for (int i = 0; i < tails_.size(); ++i) {
+    if (in_subset[tails_[i]] && !in_subset[heads_[i]]) {
+      CHECK(outgoing.AddLiteralTerm(literals_[i], IntegerValue(1)));
     }
   }
 
@@ -92,45 +171,207 @@ void AddOutgoingCut(
     // When all optionals of one side are excluded in lp solution, no cut.
     if (num_optional_nodes_in == subset_size &&
         (optional_loop_in == -1 ||
-         literal_lp_values[optional_loop_in] > 1.0 - 1e-6)) {
-      return;
+         literal_lp_values_[optional_loop_in] > 1.0 - 1e-6)) {
+      return false;
     }
-    if (num_optional_nodes_out == num_nodes - subset_size &&
+    if (num_optional_nodes_out == num_nodes_ - subset_size &&
         (optional_loop_out == -1 ||
-         literal_lp_values[optional_loop_out] > 1.0 - 1e-6)) {
-      return;
+         literal_lp_values_[optional_loop_out] > 1.0 - 1e-6)) {
+      return false;
     }
 
     // There is no mandatory node in subset, add optional_loop_in.
     if (num_optional_nodes_in == subset_size) {
-      CHECK(
-          outgoing.AddLiteralTerm(literals[optional_loop_in], IntegerValue(1)));
-      sum_outgoing += literal_lp_values[optional_loop_in];
+      CHECK(outgoing.AddLiteralTerm(literals_[optional_loop_in],
+                                    IntegerValue(1)));
     }
 
     // There is no mandatory node out of subset, add optional_loop_out.
-    if (num_optional_nodes_out == num_nodes - subset_size) {
-      CHECK(outgoing.AddLiteralTerm(literals[optional_loop_out],
+    if (num_optional_nodes_out == num_nodes_ - subset_size) {
+      CHECK(outgoing.AddLiteralTerm(literals_[optional_loop_out],
                                     IntegerValue(1)));
-      sum_outgoing += literal_lp_values[optional_loop_out];
     }
   }
 
-  if (sum_outgoing < rhs_lower_bound - 1e-6) {
-    manager->AddCut(outgoing.Build(), "Circuit", lp_values);
+  return manager_->AddCut(outgoing.Build(), name);
+}
+
+bool OutgoingCutHelper::TrySubsetCut(std::string name,
+                                     absl::Span<const int> subset) {
+  DCHECK_GE(subset.size(), 1);
+  DCHECK_LT(subset.size(), num_nodes_);
+
+  // These fields will be left untouched if demands.empty().
+  bool contain_depot = false;
+  int64_t subset_demand = 0;
+
+  // Initialize "in_subset" and the subset demands.
+  for (const int n : subset) {
+    in_subset_[n] = true;
+    if (!demands_.empty()) {
+      if (n == 0) contain_depot = true;
+      subset_demand += demands_[n];
+    }
   }
+
+  // Compute a lower bound on the outgoing flow.
+  //
+  // TODO(user): This lower bound assume all nodes in subset must be served.
+  // If this is not the case, we are really defensive in AddOutgoingCut().
+  // Improve depending on where the self-loop are.
+  //
+  // TODO(user): It could be very interesting to see if this "min outgoing
+  // flow" cannot be automatically infered from the constraint in the
+  // precedence graph. This might work if we assume that any kind of path
+  // cumul constraint is encoded with constraints:
+  //   [edge => value_head >= value_tail + edge_weight].
+  // We could take the minimum incoming edge weight per node in the set, and
+  // use the cumul variable domain to infer some capacity.
+  int64_t min_outgoing_flow = 1;
+  if (!demands_.empty()) {
+    min_outgoing_flow =
+        contain_depot ? CeilOfRatio(total_demand_ - subset_demand, capacity_)
+                      : CeilOfRatio(subset_demand, capacity_);
+  }
+
+  // We still need to serve nodes with a demand of zero, and in the corner
+  // case where all node in subset have a zero demand, the formula above
+  // result in a min_outgoing_flow of zero.
+  min_outgoing_flow = std::max(min_outgoing_flow, int64_t{1});
+
+  // Compute the current outgoing flow out of the subset.
+  //
+  // This can take a significant portion of the running time, it is why it is
+  // faster to do it only on arcs with non-zero lp values which should be in
+  // linear number rather than the total number of arc which can be quadratic.
+  //
+  // TODO(user): For the symmetric case there is an even faster algo. See if
+  // it can be generalized to the asymmetric one if become needed.
+  // Reference is algo 6.4 of the "The Traveling Salesman Problem" book
+  // mentionned above.
+  double outgoing_flow = 0.0;
+  for (const auto arc : relevant_arcs_) {
+    if (in_subset_[arc.tail] && !in_subset_[arc.head]) {
+      outgoing_flow += arc.lp_value;
+    }
+  }
+
+  // Add a cut if the current outgoing flow is not enough.
+  bool result = false;
+  if (outgoing_flow + 1e-2 < min_outgoing_flow) {
+    result = AddOutgoingCut(name, subset.size(), in_subset_,
+                            /*rhs_lower_bound=*/min_outgoing_flow);
+  }
+
+  // Sparse clean up.
+  for (const int n : subset) in_subset_[n] = false;
+
+  return result;
+}
+
+bool OutgoingCutHelper::TryBlossomSubsetCut(
+    std::string name, const std::vector<ArcWithLpValue>& symmetrized_edges,
+    absl::Span<const int> subset) {
+  DCHECK_GE(subset.size(), 1);
+  DCHECK_LT(subset.size(), num_nodes_);
+
+  // Initialize "in_subset" and the subset demands.
+  for (const int n : subset) in_subset_[n] = true;
+  auto cleanup = ::absl::MakeCleanup([subset, this]() {
+    for (const int n : subset) in_subset_[n] = false;
+  });
+
+  // The heuristic assumes non-duplicates arcs, otherwise they are all bundled
+  // together in the same symmetric edge, and the result is probably wrong.
+  absl::flat_hash_set<std::pair<int, int>> special_edges;
+  int num_inverted = 0;
+  double sum_inverted = 0.0;
+  double sum = 0.0;
+  double best_change = 1.0;
+  ArcWithLpValue const* best_swap = nullptr;
+  for (const ArcWithLpValue& arc : symmetrized_edges) {
+    if (in_subset_[arc.tail] == in_subset_[arc.head]) continue;
+
+    if (arc.lp_value > 0.5) {
+      ++num_inverted;
+      special_edges.insert({arc.tail, arc.head});
+      sum_inverted += 1.0 - arc.lp_value;
+    } else {
+      sum += arc.lp_value;
+    }
+
+    const double change = std::abs(2 * arc.lp_value - 1.0);
+    if (change < best_change) {
+      best_change = change;
+      best_swap = &arc;
+    }
+  }
+
+  // If the we don't have an odd number, we move the best edge from one set to
+  // the other.
+  if (num_inverted % 2 == 0) {
+    if (best_swap == nullptr) return false;
+    if (special_edges.contains({best_swap->tail, best_swap->head})) {
+      --num_inverted;
+      special_edges.erase({best_swap->tail, best_swap->head});
+      sum_inverted -= (1.0 - best_swap->lp_value);
+      sum += best_swap->lp_value;
+    } else {
+      ++num_inverted;
+      special_edges.insert({best_swap->tail, best_swap->head});
+      sum_inverted += (1.0 - best_swap->lp_value);
+      sum -= best_swap->lp_value;
+    }
+  }
+  if (sum + sum_inverted > 0.99) return false;
+
+  // For the route constraint, it is actually allowed to have circuit of size
+  // 2, so the reasoning is wrong if one of the edges touches the depot.
+  if (!demands_.empty()) {
+    for (const auto [tail, head] : special_edges) {
+      if (tail == 0) return false;
+    }
+  }
+
+  // Try to generate the cut.
+  //
+  // We deal with the corner case with duplicate arcs, or just one side of a
+  // "symmetric" edge present.
+  int num_actual_inverted = 0;
+  absl::flat_hash_set<std::pair<int, int>> processed_arcs;
+  LinearConstraintBuilder builder(encoder_, IntegerValue(1), kMaxIntegerValue);
+  for (int i = 0; i < tails_.size(); ++i) {
+    if (tails_[i] == heads_[i]) continue;
+    if (in_subset_[tails_[i]] == in_subset_[heads_[i]]) continue;
+
+    const std::pair<int, int> key = {tails_[i], heads_[i]};
+    const std::pair<int, int> r_key = {heads_[i], tails_[i]};
+    const std::pair<int, int> s_key = std::min(key, r_key);
+    if (special_edges.contains(s_key) && !processed_arcs.contains(key)) {
+      processed_arcs.insert(key);
+      CHECK(builder.AddLiteralTerm(literals_[i], IntegerValue(-1)));
+      if (!processed_arcs.contains(r_key)) {
+        ++num_actual_inverted;
+      }
+      continue;
+    }
+
+    // Normal edge.
+    CHECK(builder.AddLiteralTerm(literals_[i], IntegerValue(1)));
+  }
+  builder.AddConstant(IntegerValue(num_actual_inverted));
+  if (num_actual_inverted % 2 == 0) return false;
+
+  return manager_->AddCut(builder.Build(), name);
 }
 
 }  // namespace
 
 void GenerateInterestingSubsets(int num_nodes,
                                 const std::vector<std::pair<int, int>>& arcs,
-                                int min_subset_size, int stop_at_num_components,
+                                int stop_at_num_components,
                                 std::vector<int>* subset_data,
                                 std::vector<absl::Span<const int>>* subsets) {
-  subset_data->resize(num_nodes);
-  subsets->clear();
-
   // We will do a union-find by adding one by one the arc of the lp solution
   // in the order above. Every intermediate set during this construction will
   // be a candidate for a cut.
@@ -182,48 +423,118 @@ void GenerateInterestingSubsets(int num_nodes,
   // a consecutive span in the subset_data vector. This vector just lists the
   // nodes in the "pre-order" graph traversal order. The Spans will point inside
   // the subset_data vector, it is why we initialize it once and for all.
-  int new_size = 0;
-  {
-    std::vector<absl::InlinedVector<int, 2>> graph(parent.size());
-    for (int i = 0; i < parent.size(); ++i) {
-      if (parent[i] != i) graph[parent[i]].push_back(i);
-    }
-    std::vector<int> queue;
-    std::vector<bool> seen(graph.size(), false);
-    std::vector<int> start_index(parent.size());
-    for (int i = 0; i < parent.size(); ++i) {
-      // Note that because of the way we constructed 'parent', the graph is a
-      // binary tree. This is not required for the correctness of the algorithm
-      // here though.
-      CHECK(graph[i].empty() || graph[i].size() == 2);
-      if (parent[i] != i) continue;
+  ExtractAllSubsetsFromForest(parent, subset_data, subsets,
+                              /*node_limit=*/num_nodes);
+}
 
-      // Explore the subtree rooted at node i.
-      CHECK(!seen[i]);
-      queue.push_back(i);
-      while (!queue.empty()) {
-        const int node = queue.back();
-        if (seen[node]) {
-          queue.pop_back();
-          // All the children of node are in the span [start, end) of the
-          // subset_data vector.
-          const int start = start_index[node];
-          if (new_size - start >= min_subset_size) {
-            subsets->emplace_back(&(*subset_data)[start], new_size - start);
-          }
-          continue;
+void ExtractAllSubsetsFromForest(const std::vector<int>& parent,
+                                 std::vector<int>* subset_data,
+                                 std::vector<absl::Span<const int>>* subsets,
+                                 int node_limit) {
+  // To not reallocate memory since we need the span to point inside this
+  // vector, we resize subset_data right away.
+  int out_index = 0;
+  const int num_nodes = parent.size();
+  subset_data->resize(std::min(num_nodes, node_limit));
+  subsets->clear();
+
+  // Starts by creating the corresponding graph and find the root.
+  util::StaticGraph<int> graph(num_nodes, num_nodes - 1);
+  for (int i = 0; i < num_nodes; ++i) {
+    if (parent[i] != i) {
+      graph.AddArc(parent[i], i);
+    }
+  }
+  graph.Build();
+
+  // Perform a dfs on the rooted tree.
+  // The subset_data will just be the node in post-order.
+  std::vector<int> subtree_starts(num_nodes, -1);
+  std::vector<int> stack;
+  stack.reserve(num_nodes);
+  for (int i = 0; i < parent.size(); ++i) {
+    if (parent[i] != i) continue;
+
+    stack.push_back(i);  // root.
+    while (!stack.empty()) {
+      const int node = stack.back();
+
+      // The node was already explored, output its subtree and pop it.
+      if (subtree_starts[node] >= 0) {
+        stack.pop_back();
+        if (node < node_limit) {
+          (*subset_data)[out_index++] = node;
         }
-        seen[node] = true;
-        start_index[node] = new_size;
-        if (node < num_nodes) (*subset_data)[new_size++] = node;
-        for (const int child : graph[node]) {
-          if (!seen[child]) queue.push_back(child);
-        }
+        const int start = subtree_starts[node];
+        const int size = out_index - start;
+        subsets->push_back(absl::MakeSpan(&(*subset_data)[start], size));
+        continue;
+      }
+
+      // Explore.
+      subtree_starts[node] = out_index;
+      for (const int child : graph[node]) {
+        stack.push_back(child);
       }
     }
   }
+}
 
-  DCHECK_EQ(new_size, num_nodes);
+std::vector<int> ComputeGomoryHuTree(
+    int num_nodes, const std::vector<ArcWithLpValue>& relevant_arcs) {
+  // Initialize the graph. Note that we use only arcs with a relevant lp
+  // value, so this should be small in practice.
+  SimpleMaxFlow max_flow;
+  for (const auto& [tail, head, lp_value] : relevant_arcs) {
+    max_flow.AddArcWithCapacity(tail, head, std::round(1.0e6 * lp_value));
+    max_flow.AddArcWithCapacity(head, tail, std::round(1.0e6 * lp_value));
+  }
+
+  // Compute an equivalent max-flow tree, according to the paper.
+  // This version should actually produce a Gomory-Hu cut tree.
+  std::vector<int> min_cut_subset;
+  std::vector<int> parent(num_nodes, 0);
+  for (int s = 1; s < num_nodes; ++s) {
+    const int t = parent[s];
+    if (max_flow.Solve(s, t) != SimpleMaxFlow::OPTIMAL) break;
+    max_flow.GetSourceSideMinCut(&min_cut_subset);
+    bool parent_of_t_in_subset = false;
+    for (const int i : min_cut_subset) {
+      if (i == parent[t]) parent_of_t_in_subset = true;
+      if (i != s && parent[i] == t) parent[i] = s;
+    }
+    if (parent_of_t_in_subset) {
+      parent[s] = parent[t];
+      parent[t] = s;
+    }
+  }
+
+  return parent;
+}
+
+void SymmetrizeArcs(std::vector<ArcWithLpValue>* arcs) {
+  for (ArcWithLpValue& arc : *arcs) {
+    if (arc.tail <= arc.head) continue;
+    std::swap(arc.tail, arc.head);
+  }
+  std::sort(arcs->begin(), arcs->end(),
+            [](const ArcWithLpValue& a, const ArcWithLpValue& b) {
+              return std::tie(a.tail, a.head) < std::tie(b.tail, b.head);
+            });
+
+  int new_size = 0;
+  int last_tail = -1;
+  int last_head = -1;
+  for (const ArcWithLpValue& arc : *arcs) {
+    if (arc.tail == last_tail && arc.head == last_head) {
+      (*arcs)[new_size - 1].lp_value += arc.lp_value;
+      continue;
+    }
+    (*arcs)[new_size++] = arc;
+    last_tail = arc.tail;
+    last_head = arc.head;
+  }
+  arcs->resize(new_size);
 }
 
 // We roughly follow the algorithm described in section 6 of "The Traveling
@@ -234,22 +545,16 @@ void GenerateInterestingSubsets(int num_nodes,
 // the asymmetric case.
 void SeparateSubtourInequalities(
     int num_nodes, const std::vector<int>& tails, const std::vector<int>& heads,
-    const std::vector<Literal>& literals,
-    const absl::StrongVector<IntegerVariable, double>& lp_values,
-    absl::Span<const int64_t> demands, int64_t capacity,
-    LinearConstraintManager* manager, Model* model) {
+    const std::vector<Literal>& literals, absl::Span<const int64_t> demands,
+    int64_t capacity, LinearConstraintManager* manager, Model* model) {
   if (num_nodes <= 2) return;
 
   // We will collect only the arcs with a positive lp_values to speed up some
   // computation below.
-  struct Arc {
-    int tail;
-    int head;
-    double lp_value;
-  };
-  std::vector<Arc> relevant_arcs;
+  std::vector<ArcWithLpValue> relevant_arcs;
 
   // Sort the arcs by non-increasing lp_values.
+  const auto& lp_values = manager->LpValues();
   std::vector<double> literal_lp_values(literals.size());
   std::vector<std::pair<double, int>> arc_by_decreasing_lp_values;
   auto* encoder = model->GetOrCreate<IntegerEncoder>();
@@ -279,7 +584,6 @@ void SeparateSubtourInequalities(
   std::vector<int> subset_data;
   std::vector<absl::Span<const int>> subsets;
   GenerateInterestingSubsets(num_nodes, ordered_arcs,
-                             /*min_subset_size=*/2,
                              /*stop_at_num_components=*/2, &subset_data,
                              &subsets);
 
@@ -290,84 +594,86 @@ void SeparateSubtourInequalities(
     subsets.push_back(absl::MakeSpan(&depot, 1));
   }
 
-  // Compute the total demands in order to know the minimum incoming/outgoing
-  // flow.
-  int64_t total_demands = 0;
-  if (!demands.empty()) {
-    for (const int64_t demand : demands) total_demands += demand;
-  }
+  OutgoingCutHelper helper(num_nodes, capacity, demands, tails, heads, literals,
+                           literal_lp_values, relevant_arcs, manager, model);
+
+  // Hack/optim: we exploit the tree structure of the subsets to not add a cut
+  // for a larger subset if we added a cut from one included in it.
+  //
+  // TODO(user): Currently if we add too many not so relevant cuts, our generic
+  // MIP cut heuritic are way too slow on TSP/VRP problems.
+  int last_added_start = -1;
 
   // Process each subsets and add any violated cut.
-  std::vector<bool> in_subset(num_nodes, false);
+  int num_added = 0;
   for (const absl::Span<const int> subset : subsets) {
-    DCHECK_GE(subset.size(), 1);
-    DCHECK_LT(subset.size(), num_nodes);
-
-    // These fields will be left untouched if demands.empty().
-    bool contain_depot = false;
-    int64_t subset_demand = 0;
-
-    // Initialize "in_subset" and the subset demands.
-    for (const int n : subset) {
-      in_subset[n] = true;
-      if (!demands.empty()) {
-        if (n == 0) contain_depot = true;
-        subset_demand += demands[n];
-      }
+    if (subset.size() <= 1) continue;
+    const int start = static_cast<int>(subset.data() - subset_data.data());
+    if (start <= last_added_start) continue;
+    if (helper.TrySubsetCut("Circuit", subset)) {
+      ++num_added;
+      last_added_start = start;
     }
+  }
 
-    // Compute a lower bound on the outgoing flow.
-    //
-    // TODO(user): This lower bound assume all nodes in subset must be served.
-    // If this is not the case, we are really defensive in AddOutgoingCut().
-    // Improve depending on where the self-loop are.
-    //
-    // TODO(user): It could be very interesting to see if this "min outgoing
-    // flow" cannot be automatically infered from the constraint in the
-    // precedence graph. This might work if we assume that any kind of path
-    // cumul constraint is encoded with constraints:
-    //   [edge => value_head >= value_tail + edge_weight].
-    // We could take the minimum incoming edge weight per node in the set, and
-    // use the cumul variable domain to infer some capacity.
-    int64_t min_outgoing_flow = 1;
-    if (!demands.empty()) {
-      min_outgoing_flow =
-          contain_depot ? CeilOfRatio(total_demands - subset_demand, capacity)
-                        : CeilOfRatio(subset_demand, capacity);
+  // If there were no cut added by the heuristic above, we try exact separation.
+  //
+  // With n-1 max_flow from a source to all destination, we can get the global
+  // min-cut. Here, we use a slightly more advanced algorithm that will find a
+  // min-cut for all possible pair of nodes. This is achieved by computing a
+  // Gomory-Hu tree, still with n-1 max flow call.
+  //
+  // Note(user): Compared to any min-cut, these cut have some nice properties
+  // since they are "included" in each other. This might help with combining
+  // them within our generic IP cuts framework.
+  //
+  // TODO(user): I had an older version that tried the n-cuts generated during
+  // the course of the algorithm. This could also be interesting. But it is
+  // hard to tell with our current benchmark setup.
+  if (num_added != 0) return;
+  SymmetrizeArcs(&relevant_arcs);
+  std::vector<int> parent = ComputeGomoryHuTree(num_nodes, relevant_arcs);
+
+  // Try all interesting subset from the Gomory-Hu tree.
+  ExtractAllSubsetsFromForest(parent, &subset_data, &subsets);
+  last_added_start = -1;
+  for (const absl::Span<const int> subset : subsets) {
+    if (subset.size() <= 1) continue;
+    if (subset.size() == num_nodes) continue;
+    const int start = static_cast<int>(subset.data() - subset_data.data());
+    if (start <= last_added_start) continue;
+    if (helper.TrySubsetCut("CircuitExact", subset)) {
+      ++num_added;
+      last_added_start = start;
     }
+  }
 
-    // We still need to serve nodes with a demand of zero, and in the corner
-    // case where all node in subset have a zero demand, the formula above
-    // result in a min_outgoing_flow of zero.
-    min_outgoing_flow = std::max(min_outgoing_flow, int64_t{1});
-
-    // Compute the current outgoing flow out of the subset.
-    //
-    // This can take a significant portion of the running time, it is why it is
-    // faster to do it only on arcs with non-zero lp values which should be in
-    // linear number rather than the total number of arc which can be quadratic.
-    //
-    // TODO(user): For the symmetric case there is an even faster algo. See if
-    // it can be generalized to the asymmetric one if become needed.
-    // Reference is algo 6.4 of the "The Traveling Salesman Problem" book
-    // mentionned above.
-    double outgoing_flow = 0.0;
-    for (const auto arc : relevant_arcs) {
-      if (in_subset[arc.tail] && !in_subset[arc.head]) {
-        outgoing_flow += arc.lp_value;
-      }
+  // Exact separation of symmetric Blossom cut. We use the algorithm in the
+  // paper: "A Faster Exact Separation Algorithm for Blossom Inequalities", Adam
+  // N. Letchford, Gerhard Reinelt, Dirk Oliver Theis, 2004.
+  //
+  // Note that the "relevant_arcs" were symmetrized above.
+  if (num_added != 0) return;
+  if (num_nodes <= 2) return;
+  std::vector<ArcWithLpValue> for_blossom;
+  for_blossom.reserve(relevant_arcs.size());
+  for (ArcWithLpValue arc : relevant_arcs) {
+    if (arc.lp_value > 0.5) arc.lp_value = 1.0 - arc.lp_value;
+    if (arc.lp_value < 1e-6) continue;
+    for_blossom.push_back(arc);
+  }
+  parent = ComputeGomoryHuTree(num_nodes, for_blossom);
+  ExtractAllSubsetsFromForest(parent, &subset_data, &subsets);
+  last_added_start = -1;
+  for (const absl::Span<const int> subset : subsets) {
+    if (subset.size() <= 1) continue;
+    if (subset.size() == num_nodes) continue;
+    const int start = static_cast<int>(subset.data() - subset_data.data());
+    if (start <= last_added_start) continue;
+    if (helper.TryBlossomSubsetCut("CircuitBlossom", relevant_arcs, subset)) {
+      ++num_added;
+      last_added_start = start;
     }
-
-    // Add a cut if the current outgoing flow is not enough.
-    if (outgoing_flow < min_outgoing_flow - 1e-6) {
-      AddOutgoingCut(num_nodes, subset.size(), in_subset, tails, heads,
-                     literals, literal_lp_values,
-                     /*rhs_lower_bound=*/min_outgoing_flow, lp_values, manager,
-                     model);
-    }
-
-    // Sparse clean up.
-    for (const int n : subset) in_subset[n] = false;
   }
 }
 
@@ -424,16 +730,12 @@ CutGenerator CreateStronglyConnectedGraphCutGenerator(
     std::vector<Literal> literals, Model* model) {
   CutGenerator result;
   result.vars = GetAssociatedVariables(literals, model);
-  result.generate_cuts =
-      [num_nodes, tails, heads, literals, model](
-          const absl::StrongVector<IntegerVariable, double>& lp_values,
-          LinearConstraintManager* manager) mutable {
-        FilterFalseArcsAtLevelZero(tails, heads, literals, model);
-        SeparateSubtourInequalities(
-            num_nodes, tails, heads, literals, lp_values,
-            /*demands=*/{}, /*capacity=*/0, manager, model);
-        return true;
-      };
+  result.generate_cuts = [=](LinearConstraintManager* manager) mutable {
+    FilterFalseArcsAtLevelZero(tails, heads, literals, model);
+    SeparateSubtourInequalities(num_nodes, tails, heads, literals,
+                                /*demands=*/{}, /*capacity=*/0, manager, model);
+    return true;
+  };
   return result;
 }
 
@@ -444,16 +746,12 @@ CutGenerator CreateCVRPCutGenerator(int num_nodes, std::vector<int> tails,
                                     int64_t capacity, Model* model) {
   CutGenerator result;
   result.vars = GetAssociatedVariables(literals, model);
-  result.generate_cuts =
-      [num_nodes, tails, heads, demands, capacity, literals, model](
-          const absl::StrongVector<IntegerVariable, double>& lp_values,
-          LinearConstraintManager* manager) mutable {
-        FilterFalseArcsAtLevelZero(tails, heads, literals, model);
-        SeparateSubtourInequalities(num_nodes, tails, heads, literals,
-                                    lp_values, demands, capacity, manager,
-                                    model);
-        return true;
-      };
+  result.generate_cuts = [=](LinearConstraintManager* manager) mutable {
+    FilterFalseArcsAtLevelZero(tails, heads, literals, model);
+    SeparateSubtourInequalities(num_nodes, tails, heads, literals, demands,
+                                capacity, manager, model);
+    return true;
+  };
   return result;
 }
 
@@ -508,7 +806,6 @@ void SeparateFlowInequalities(
   std::vector<int> subset_data;
   std::vector<absl::Span<const int>> subsets;
   GenerateInterestingSubsets(num_nodes, ordered_arcs,
-                             /*min_subset_size=*/1,
                              /*stop_at_num_components=*/1, &subset_data,
                              &subsets);
 
@@ -582,7 +879,7 @@ void SeparateFlowInequalities(
           cut.AddTerm(arc_capacities[i], 1.0);
         }
       }
-      manager->AddCut(cut.Build(), "IncomingFlow", lp_values);
+      manager->AddCut(cut.Build(), "IncomingFlow");
     }
 
     if (lp_outgoing_flow < ToDouble(min_outgoing_flow) - 1e-6) {
@@ -596,7 +893,7 @@ void SeparateFlowInequalities(
           cut.AddTerm(arc_capacities[i], 1.0);
         }
       }
-      manager->AddCut(cut.Build(), "OutgoingFlow", lp_values);
+      manager->AddCut(cut.Build(), "OutgoingFlow");
     }
 
     // Sparse clean up.
@@ -616,13 +913,11 @@ CutGenerator CreateFlowCutGenerator(
   for (const AffineExpression expr : arc_capacities) {
     if (!expr.IsConstant()) result.vars.push_back(expr.var);
   }
-  result.generate_cuts =
-      [=](const absl::StrongVector<IntegerVariable, double>& lp_values,
-          LinearConstraintManager* manager) {
-        SeparateFlowInequalities(num_nodes, tails, heads, arc_capacities,
-                                 get_flows, lp_values, manager, model);
-        return true;
-      };
+  result.generate_cuts = [=](LinearConstraintManager* manager) {
+    SeparateFlowInequalities(num_nodes, tails, heads, arc_capacities, get_flows,
+                             manager->LpValues(), manager, model);
+    return true;
+  };
   return result;
 }
 

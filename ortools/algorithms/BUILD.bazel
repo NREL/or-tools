@@ -11,7 +11,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
 package(default_visibility = ["//visibility:public"])
+
+# OSS solvers
+bool_flag(
+    name = "with_cbc",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "use_cbc",
+    flag_values = {
+        ":with_cbc": "true",
+    },
+)
+
+bool_flag(
+    name = "with_scip",
+    build_setting_default = True,
+)
+
+config_setting(
+    name = "use_scip",
+    flag_values = {
+        ":with_scip": "true",
+    },
+)
+
+cc_library(
+    name = "binary_search",
+    srcs = [],
+    hdrs = ["binary_search.h"],
+    deps = [
+        "//ortools/base",
+        "//ortools/base:dump_vars",
+        "@com_google_absl//absl/numeric:int128",
+    ],
+)
 
 cc_library(
     name = "hungarian",
@@ -41,30 +79,16 @@ cc_test(
 )
 
 cc_library(
-    name = "knapsack_solver_base_lib",
-    hdrs = ["knapsack_solver.h"],
-    deps = [
-        ":knapsack_solver_for_interface_lib",
-        "//ortools/base",
-        "//ortools/util:time_limit",
-    ],
-)
-
-cc_library(
     name = "knapsack_solver_lib",
-    hdrs = ["knapsack_solver.h"],
-    deps = [
-        ":knapsack_solver_for_interface_lib",
-        "//ortools/base",
-        "//ortools/linear_solver",
-        "//ortools/util:time_limit",
-    ],
-)
-
-cc_library(
-    name = "knapsack_solver_for_interface_lib",
     srcs = ["knapsack_solver.cc"],
     hdrs = ["knapsack_solver.h"],
+    copts = [] + select({
+        ":use_cbc": ["-DUSE_CBC"],
+        "//conditions:default": [],
+    }) + select({
+        ":use_scip": ["-DUSE_SCIP"],
+        "//conditions:default": [],
+    }),
     deps = [
         "//ortools/base",
         "//ortools/base:stl_util",
@@ -74,19 +98,69 @@ cc_library(
     ],
 )
 
+# Weighted set covering
+
 cc_library(
-    name = "knapsack_solver_for_cuts",
-    srcs = ["knapsack_solver_for_cuts.cc"],
-    hdrs = ["knapsack_solver_for_cuts.h"],
-    visibility = ["//visibility:public"],
+    name = "set_cover_model",
+    srcs = ["set_cover_model.cc"],
+    hdrs = ["set_cover_model.h"],
     deps = [
-        "//ortools/base",
-        "//ortools/base:intops",
-        "//ortools/base:ptr_util",
-        "//ortools/base:strong_vector",
-        "//ortools/util:time_limit",
+        "//ortools/lp_data:base",
+        "@com_google_absl//absl/log:check",
     ],
 )
+
+cc_library(
+    name = "set_cover_ledger",
+    srcs = ["set_cover_ledger.cc"],
+    hdrs = ["set_cover_ledger.h"],
+    deps = [
+        ":set_cover_model",
+        "//ortools/base",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+    ],
+)
+
+cc_library(
+    name = "set_cover_utils",
+    srcs = ["set_cover_utils.cc"],
+    hdrs = ["set_cover_utils.h"],
+    deps = [
+        ":set_cover_ledger",
+        ":set_cover_model",
+        "//ortools/base:adjustable_priority_queue",
+    ],
+)
+
+cc_library(
+    name = "set_cover",
+    srcs = ["set_cover.cc"],
+    hdrs = ["set_cover.h"],
+    deps = [
+        ":set_cover_utils",
+        "//ortools/base",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/random",
+    ],
+)
+
+cc_test(
+    name = "set_cover_test",
+    size = "medium",
+    timeout = "long",
+    srcs = ["set_cover_test.cc"],
+    deps = [
+        ":set_cover",
+        "@com_google_absl//absl/log",
+        "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Graph automorphism libraries.
 
 cc_library(
     name = "dense_doubly_linked_list",

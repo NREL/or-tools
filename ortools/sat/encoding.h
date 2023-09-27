@@ -24,8 +24,10 @@
 #include <deque>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/macros.h"
@@ -57,14 +59,17 @@ namespace sat {
 // Constraints", In Proc. of CP 2003, pages 108-122, 2003.
 class EncodingNode {
  public:
-  EncodingNode() {}
+  EncodingNode() = default;
 
-  // Constructs a EncodingNode of size one, just formed by the given literal.
-  explicit EncodingNode(Literal l);
-
-  // Constructs a node with value in [lb, ub].
+  // Static creation functions.
+  //
+  // The generic version constructs a node with value in [lb, ub].
   // New literal "<=x" will be constructed using create_lit(x).
-  EncodingNode(int lb, int ub, std::function<Literal(int x)> create_lit);
+  static EncodingNode ConstantNode(Coefficient weight);
+  static EncodingNode LiteralNode(Literal l, Coefficient weight);
+  static EncodingNode GenericNode(int lb, int ub,
+                                  std::function<Literal(int x)> create_lit,
+                                  Coefficient weight);
 
   // Creates a "full" encoding node on n new variables, the represented number
   // beeing in [lb, ub = lb + n). The variables are added to the given solver
@@ -79,6 +84,12 @@ class EncodingNode {
   void InitializeLazyNode(EncodingNode* a, EncodingNode* b, SatSolver* solver);
   void InitializeLazyCoreNode(Coefficient weight, EncodingNode* a,
                               EncodingNode* b);
+
+  // If we know that all the literals[0] of the given nodes are in "at most one"
+  // relationship, we can create a node that is the sum of them with a simple
+  // encoding. This does create linking implications.
+  void InitializeAmoNode(absl::Span<EncodingNode* const> nodes,
+                         SatSolver* solver);
 
   // Returns a literal with the meaning 'this node number is > i'.
   // The given i must be in [lb_, current_ub).
@@ -102,6 +113,9 @@ class EncodingNode {
   // Creates a new literals and increases current_ub.
   // Returns false if we were already at the upper bound for this node.
   bool IncreaseCurrentUB(SatSolver* solver);
+
+  // Indicate that the node cannot grow further than its current assumption.
+  void TransformToBoolean(SatSolver* solver);
 
   // Removes the left-side literals fixed to 1. Note that this increases lb_ and
   // reduces the number of active literals. It also removes any right-side
@@ -132,6 +146,7 @@ class EncodingNode {
   int depth() const { return depth_; }
 
   int lb() const { return lb_; }
+  int weight_lb() const { return weight_lb_; }
   int current_ub() const { return lb_ + literals_.size(); }
   int ub() const { return ub_; }
   EncodingNode* child_a() const { return child_a_; }
@@ -146,7 +161,7 @@ class EncodingNode {
   int ub_ = 1;
   BooleanVariable for_sorting_;
 
-  // The weight is only applies for literal >= this lb.
+  // The weight is only applied for literal >= this lb.
   int weight_lb_ = 0;
 
   Coefficient weight_;
@@ -191,25 +206,14 @@ EncodingNode* LazyMergeAllNodeWithPQAndIncreaseLb(
     Coefficient weight, const std::vector<EncodingNode*>& nodes,
     SatSolver* solver, std::deque<EncodingNode>* repository);
 
-// Returns a vector with one new EncodingNode by variable in the given
-// objective. Sets the offset to the negated sum of the negative coefficient,
-// because in this case we negate the literals to have only positive
-// coefficients.
-std::vector<EncodingNode*> CreateInitialEncodingNodes(
-    const std::vector<Literal>& literals,
-    const std::vector<Coefficient>& coeffs, Coefficient* offset,
-    std::deque<EncodingNode>* repository);
-std::vector<EncodingNode*> CreateInitialEncodingNodes(
-    const LinearObjective& objective_proto, Coefficient* offset,
-    std::deque<EncodingNode>* repository);
-
 // Reduces the nodes using the now fixed literals, update the lower-bound, and
 // returns the set of assumptions for the next round of the core-based
 // algorithm. Returns an empty set of assumptions if everything is fixed.
-std::vector<Literal> ReduceNodesAndExtractAssumptions(
-    Coefficient upper_bound, Coefficient stratified_lower_bound,
-    Coefficient* lower_bound, std::vector<EncodingNode*>* nodes,
-    SatSolver* solver);
+void ReduceNodes(Coefficient upper_bound, Coefficient* lower_bound,
+                 std::vector<EncodingNode*>* nodes, SatSolver* solver);
+std::vector<Literal> ExtractAssumptions(Coefficient stratified_lower_bound,
+                                        const std::vector<EncodingNode*>& nodes,
+                                        SatSolver* solver);
 
 // Returns the minimum weight of the nodes in the core. Note that the literal in
 // the core must appear in the same order as the one in nodes.
@@ -222,29 +226,52 @@ Coefficient ComputeCoreMinWeight(const std::vector<EncodingNode*>& nodes,
 Coefficient MaxNodeWeightSmallerThan(const std::vector<EncodingNode*>& nodes,
                                      Coefficient upper_bound);
 
-// Updates the encoding using the given core. The literals in the core must
-// match the order in nodes. Returns false if the model become infeasible.
-bool ProcessCore(const std::vector<Literal>& core, Coefficient min_weight,
-                 std::deque<EncodingNode>* repository,
-                 std::vector<EncodingNode*>* nodes, SatSolver* solver);
+// The class reponsible for processing cores and maintaining a Boolean encoding
+// of the linear objective.
+class ObjectiveEncoder {
+ public:
+  explicit ObjectiveEncoder(Model* model)
+      : sat_solver_(model->GetOrCreate<SatSolver>()),
+        implications_(model->GetOrCreate<BinaryImplicationGraph>()),
+        random_(model->GetOrCreate<ModelRandomGenerator>()) {}
 
-// There is more than one way to create new assumptions and encode the
-// information from this core. This is slightly different from ProcessCore() and
-// follow the algorithm used by many of the top max-SAT solver under the name
-// incremental OLL. This is described in:
-// António Morgado, Carmine Dodaro, Joao Marques-Silva. "Core-Guided MaxSAT
-// with Soft Cardinality Constraints". CP 2014. pp. 564-573.
-// António Morgado, Alexey Ignatiev, Joao Marques-Silva. "MSCG: Robust
-// Core-Guided MaxSAT Solving." JSAT 9. 2014. pp. 129-134.
-//
-// TODO(user): The last time this was tested, it was however not as good as the
-// ProcessCore() version. That might change as we code/change more heuristic, so
-// we keep it around.
-bool ProcessCoreWithAlternativeEncoding(const std::vector<Literal>& core,
-                                        Coefficient min_weight,
-                                        std::deque<EncodingNode>* repository,
-                                        std::vector<EncodingNode*>* nodes,
-                                        SatSolver* solver);
+  // Updates the encoding using the given core. The literals in the core must
+  // match the order in nodes. Returns false if the model become infeasible.
+  bool ProcessCore(const std::vector<Literal>& core, Coefficient min_weight,
+                   Coefficient gap, std::string* info);
+
+  void AddBaseNode(EncodingNode node) {
+    repository_.push_back(std::move(node));
+    nodes_.push_back(&repository_.back());
+  }
+
+  // TODO(user): Remove mutable version once refactoring is done.
+  const std::vector<EncodingNode*>& nodes() const { return nodes_; }
+  std::vector<EncodingNode*>* mutable_nodes() { return &nodes_; }
+
+ private:
+  // There is more than one way to create new assumptions and encode the
+  // information from this core. This is slightly different from ProcessCore()
+  // and follow the algorithm used by many of the top max-SAT solver under the
+  // name incremental OLL. This is described in: António Morgado, Carmine
+  // Dodaro, Joao Marques-Silva. "Core-Guided MaxSAT with Soft Cardinality
+  // Constraints". CP 2014. pp. 564-573. António Morgado, Alexey Ignatiev, Joao
+  // Marques-Silva. "MSCG: Robust Core-Guided MaxSAT Solving." JSAT 9. 2014. pp.
+  // 129-134.
+  //
+  // TODO(user): The last time this was tested, it was however not as good as
+  // the ProcessCore() version. That might change as we code/change more
+  // heuristic, so we keep it around.
+  const bool alternative_encoding_ = false;
+
+  // Nodes point into repository_.
+  std::vector<EncodingNode*> nodes_;
+  std::deque<EncodingNode> repository_;
+
+  SatSolver* sat_solver_;
+  BinaryImplicationGraph* implications_;
+  ModelRandomGenerator* random_;
+};
 
 }  // namespace sat
 }  // namespace operations_research

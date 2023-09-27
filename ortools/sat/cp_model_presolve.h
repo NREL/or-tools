@@ -27,6 +27,7 @@
 #include "ortools/sat/presolve_context.h"
 #include "ortools/sat/presolve_util.h"
 #include "ortools/sat/sat_parameters.pb.h"
+#include "ortools/sat/util.h"
 #include "ortools/util/affine_relation.h"
 #include "ortools/util/bitset.h"
 #include "ortools/util/logging.h"
@@ -220,7 +221,7 @@ class CpModelPresolver {
   void ExtractEnforcementLiteralFromLinearConstraint(int ct_index,
                                                      ConstraintProto* ct);
   void LowerThanCoeffStrengthening(bool from_lower_bound, int64_t min_magnitude,
-                                   int64_t threshold, ConstraintProto* ct);
+                                   int64_t rhs, ConstraintProto* ct);
 
   // Extracts cliques from bool_and and small at_most_one constraints and
   // transforms them into maximal cliques.
@@ -250,9 +251,19 @@ class CpModelPresolver {
 
   void MergeNoOverlapConstraints();
 
+  // Assumes that all [constraint_index, multiple] in block are linear
+  // constraint that contains multiple * common_part and perform the
+  // substitution.
+  void RemoveCommonPart(
+      const absl::flat_hash_map<int, int64_t>& common_var_coeff_map,
+      const std::vector<std::pair<int, int64_t>>& block);
+
   // Try to identify many linear constraints that share a common linear
-  // expression.
-  void FindBigLinearOverlap();
+  // expression. We have two slightly different heuristic.
+  //
+  // TODO(user): consolidate them.
+  void FindBigHorizontalLinearOverlap();
+  void FindBigVerticalLinearOverlap();
 
   // Heuristic to merge clauses that differ in only one literal.
   // The idea is to regroup a bunch of clauses into a single bool_and.

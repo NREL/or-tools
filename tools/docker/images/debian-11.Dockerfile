@@ -13,12 +13,12 @@ RUN apt-get update -qq \
 ENTRYPOINT ["/bin/bash", "-c"]
 CMD ["/bin/bash"]
 
-# Install CMake 3.25.2
+# Install CMake v3.26.4
 RUN ARCH=$(uname -m) \
-&& wget -q "https://cmake.org/files/v3.25/cmake-3.25.2-linux-${ARCH}.sh" \
-&& chmod a+x cmake-3.25.2-linux-${ARCH}.sh \
-&& ./cmake-3.25.2-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
-&& rm cmake-3.25.2-linux-${ARCH}.sh
+&& wget -q "https://cmake.org/files/v3.26/cmake-3.26.4-linux-${ARCH}.sh" \
+&& chmod a+x cmake-3.26.4-linux-${ARCH}.sh \
+&& ./cmake-3.26.4-linux-${ARCH}.sh --prefix=/usr/local/ --skip-license \
+&& rm cmake-3.26.4-linux-${ARCH}.sh
 
 # Install .Net
 # see https://docs.microsoft.com/en-us/dotnet/core/install/linux-debian#debian-11-
@@ -46,6 +46,7 @@ RUN apt-get update -qq \
 && apt-get install -qq python3 python3-dev python3-pip python3-venv \
 && apt-get clean \
 && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN python3 -m pip install absl-py mypy-protobuf
 
 ENV TZ=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
@@ -87,6 +88,7 @@ RUN make archive_cpp
 # .Net
 ## build
 FROM cpp_build AS dotnet_build
+ENV USE_DOTNET_CORE_31=ON
 RUN make detect_dotnet \
 && make dotnet JOBS=8
 ## archive

@@ -21,13 +21,17 @@
 #include <utility>
 #include <vector>
 
+#include "ortools/base/helpers.h"
+#include "ortools/base/options.h"
 #include "ortools/linear_solver/linear_solver.h"
 #include "ortools/linear_solver/linear_solver.pb.h"
-#include "ortools/linear_solver/proto_solver/highs_proto_solver.h"
 #include "ortools/linear_solver/proto_solver/sat_proto_solver.h"
 #if defined(USE_SCIP)
 #include "ortools/linear_solver/proto_solver/scip_proto_solver.h"
 #endif  // defined(USE_SCIP)
+#if defined(USE_PDLP)
+#include "ortools/linear_solver/proto_solver/pdlp_proto_solver.h"
+#endif  // defined(USE_PDLP)
 #if defined(USE_LP_PARSER)
 #include "ortools/lp_data/lp_parser.h"
 #endif  // defined(USE_LP_PARSER)
@@ -140,7 +144,24 @@ void ModelBuilderHelper::SetConstraintUpperBound(int ct_index, double ub) {
 
 void ModelBuilderHelper::AddConstraintTerm(int ct_index, int var_index,
                                            double coeff) {
+  if (coeff == 0.0) return;
   MPConstraintProto* ct_proto = model_.mutable_constraint(ct_index);
+  ct_proto->add_var_index(var_index);
+  ct_proto->add_coefficient(coeff);
+}
+
+void ModelBuilderHelper::SafeAddConstraintTerm(int ct_index, int var_index,
+                                               double coeff) {
+  if (coeff == 0.0) return;
+  MPConstraintProto* ct_proto = model_.mutable_constraint(ct_index);
+  for (int i = 0; i < ct_proto->var_index_size(); ++i) {
+    if (ct_proto->var_index(i) == var_index) {
+      ct_proto->set_coefficient(i, coeff + ct_proto->coefficient(i));
+      return;
+    }
+  }
+  // If we reach this point, the variable does not exist in the constraint yet,
+  // so we add it to the constraint as a new term.
   ct_proto->add_var_index(var_index);
   ct_proto->add_coefficient(coeff);
 }
@@ -148,6 +169,21 @@ void ModelBuilderHelper::AddConstraintTerm(int ct_index, int var_index,
 void ModelBuilderHelper::SetConstraintName(int ct_index,
                                            const std::string& name) {
   model_.mutable_constraint(ct_index)->set_name(name);
+}
+
+void ModelBuilderHelper::SetConstraintCoefficient(int ct_index, int var_index,
+                                                  double coeff) {
+  MPConstraintProto* ct_proto = model_.mutable_constraint(ct_index);
+  for (int i = 0; i < ct_proto->var_index_size(); ++i) {
+    if (ct_proto->var_index(i) == var_index) {
+      ct_proto->set_coefficient(i, coeff);
+      return;
+    }
+  }
+  // If we reach this point, the variable does not exist in the constraint yet,
+  // so we add it to the constraint as a new term.
+  ct_proto->add_var_index(var_index);
+  ct_proto->add_coefficient(coeff);
 }
 
 int ModelBuilderHelper::num_variables() const { return model_.variable_size(); }
@@ -226,6 +262,11 @@ void ModelBuilderHelper::SetObjectiveOffset(double offset) {
 
 std::optional<MPSolutionResponse> ModelSolverHelper::SolveRequest(
     const MPModelRequest& request) {
+  if (!MPSolver::SupportsProblemType(
+          static_cast<MPSolver::OptimizationProblemType>(
+              request.solver_type()))) {
+    return std::nullopt;
+  }
   MPSolutionResponse temp;
   MPSolver::SolveWithProto(request, &temp, &interrupt_solve_);
   return temp;
@@ -279,7 +320,24 @@ ModelSolverHelper::ModelSolverHelper(const std::string& solver_name) {
 }
 
 bool ModelSolverHelper::SolverIsSupported() const {
-  return solver_type_.has_value();
+  if (!solver_type_.has_value()) return false;
+  if (solver_type_.value() == MPModelRequest::GLOP_LINEAR_PROGRAMMING) {
+    return true;
+  }
+#ifdef USE_PDLP
+  if (solver_type_.value() == MPModelRequest::PDLP_LINEAR_PROGRAMMING) {
+    return true;
+  }
+#endif  // USE_PDLP
+  if (solver_type_.value() == MPModelRequest::SAT_INTEGER_PROGRAMMING) {
+    return true;
+  }
+#ifdef USE_SCIP
+  if (solver_type_.value() == MPModelRequest::SCIP_MIXED_INTEGER_PROGRAMMING) {
+    return true;
+  }
+#endif  // USE_SCIP
+  return false;
 }
 
 void ModelSolverHelper::Solve(const ModelBuilderHelper& model) {
@@ -327,16 +385,15 @@ void ModelSolverHelper::Solve(const ModelBuilderHelper& model) {
       break;
     }
 #endif  // defined(USE_SCIP)
-#if defined(USE_HIGHS)
-    case MPModelRequest::HIGHS_MIXED_INTEGER_PROGRAMMING:
-    case MPModelRequest::HIGHS_LINEAR_PROGRAMMING: {
-      const auto temp = HighsSolveProto(request);
+#if defined(USE_PDLP)
+    case MPModelRequest::PDLP_LINEAR_PROGRAMMING: {
+      const auto temp = PdlpSolveProto(request);
       if (temp.ok()) {
         response_ = std::move(temp.value());
       }
       break;
     }
-#endif  // defined(USE_HIGHS)
+#endif  // defined(USE_PDLP)
     default: {
       response_->set_status(
           MPSolverResponseStatus::MPSOLVER_SOLVER_TYPE_UNAVAILABLE);

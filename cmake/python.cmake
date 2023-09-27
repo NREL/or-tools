@@ -80,7 +80,7 @@ function(search_python_module)
       OUTPUT_VARIABLE MODULE_VERSION
       ERROR_QUIET
       OUTPUT_STRIP_TRAILING_WHITESPACE
-      )
+    )
   endif()
   if(${_RESULT} STREQUAL "0")
     message(STATUS "Found python module: \"${MODULE_NAME}\" (found version \"${MODULE_VERSION}\")")
@@ -90,7 +90,8 @@ function(search_python_module)
       execute_process(
         COMMAND ${Python3_EXECUTABLE} -m pip install --user ${MODULE_PACKAGE}
         OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
+        COMMAND_ERROR_IS_FATAL ANY
+      )
     else()
       message(FATAL_ERROR "Can't find python module: \"${MODULE_NAME}\", please install it using your system package manager.")
     endif()
@@ -136,6 +137,7 @@ search_python_module(
   PACKAGE mypy-protobuf
   NO_VERSION)
 set(PROTO_PYS)
+set(PROTO_MYPYS)
 file(GLOB_RECURSE proto_py_files RELATIVE ${PROJECT_SOURCE_DIR}
   "ortools/bop/*.proto"
   "ortools/constraint_solver/*.proto"
@@ -157,9 +159,11 @@ foreach(PROTO_FILE IN LISTS proto_py_files)
   get_filename_component(PROTO_DIR ${PROTO_FILE} DIRECTORY)
   get_filename_component(PROTO_NAME ${PROTO_FILE} NAME_WE)
   set(PROTO_PY ${PROJECT_BINARY_DIR}/python/${PROTO_DIR}/${PROTO_NAME}_pb2.py)
-  #message(STATUS "protoc py: ${PROTO_PY}")
+  set(PROTO_MYPY ${PROJECT_BINARY_DIR}/python/${PROTO_DIR}/${PROTO_NAME}_pb2.pyi)
+  #message(STATUS "protoc(py) py: ${PROTO_PY}")
+  #message(STATUS "protoc(py) mypy: ${PROTO_MYPY}")
   add_custom_command(
-    OUTPUT ${PROTO_PY}
+    OUTPUT ${PROTO_PY} ${PROTO_MYPY}
     COMMAND ${PROTOC_PRG}
     "--proto_path=${PROJECT_SOURCE_DIR}"
     ${PROTO_DIRS}
@@ -170,10 +174,12 @@ foreach(PROTO_FILE IN LISTS proto_py_files)
     COMMENT "Generate Python 3 protocol buffer for ${PROTO_FILE}"
     VERBATIM)
   list(APPEND PROTO_PYS ${PROTO_PY})
+  list(APPEND PROTO_MYPYS ${PROTO_MYPY})
 endforeach()
 add_custom_target(Py${PROJECT_NAME}_proto
   DEPENDS
     ${PROTO_PYS}
+    ${PROTO_MYPYS}
     ${PROJECT_NAMESPACE}::ortools)
 
 ###################
@@ -244,12 +250,14 @@ file(GENERATE
   INPUT ${PROJECT_BINARY_DIR}/python/__init__.py.in)
 
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/algorithms/__init__.py CONTENT "")
+file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/algorithms/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/bop/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/constraint_solver/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/glop/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/graph/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/graph/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/init/__init__.py CONTENT "")
+file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/init/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/linear_solver/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/linear_solver/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/packing/__init__.py CONTENT "")
@@ -259,6 +267,7 @@ file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/sat/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/sat/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/sat/colab/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/scheduling/__init__.py CONTENT "")
+file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/scheduling/python/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/util/__init__.py CONTENT "")
 file(GENERATE OUTPUT ${PYTHON_PROJECT_DIR}/util/python/__init__.py CONTENT "")
 
@@ -267,7 +276,7 @@ file(COPY
   DESTINATION ${PYTHON_PROJECT_DIR}/linear_solver)
 file(COPY
   ortools/linear_solver/python/model_builder.py
-  ortools/linear_solver/python/model_builder_helper.py
+  ortools/linear_solver/python/model_builder_numbers.py
   DESTINATION ${PYTHON_PROJECT_DIR}/linear_solver/python)
 file(COPY
   ortools/sat/python/cp_model.py
@@ -314,18 +323,18 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E $<IF:$<STREQUAL:$<TARGET_PROPERTY:ortools,TYPE>,SHARED_LIBRARY>,copy,true>
   $<$<STREQUAL:$<TARGET_PROPERTY:ortools,TYPE>,SHARED_LIBRARY>:$<TARGET_SONAME_FILE:ortools>>
   ${PYTHON_PROJECT}/.libs
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywrapinit> ${PYTHON_PROJECT}/init
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywrapknapsack_solver> ${PYTHON_PROJECT}/algorithms
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:init_pybind11> ${PYTHON_PROJECT}/init/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:knapsack_solver_pybind11> ${PYTHON_PROJECT}/algorithms/python
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:linear_sum_assignment_pybind11> ${PYTHON_PROJECT}/graph/python
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:max_flow_pybind11> ${PYTHON_PROJECT}/graph/python
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:min_cost_flow_pybind11> ${PYTHON_PROJECT}/graph/python
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywrapcp> ${PYTHON_PROJECT}/constraint_solver
   COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywraplp> ${PYTHON_PROJECT}/linear_solver
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywrap_model_builder_helper> ${PYTHON_PROJECT}/linear_solver/python
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywrap_pdlp_pybind11> ${PYTHON_PROJECT}/pdlp/python
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:swig_helper> ${PYTHON_PROJECT}/sat/python
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pywraprcpsp> ${PYTHON_PROJECT}/scheduling
-  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:sorted_interval_list> ${PYTHON_PROJECT}/util/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:model_builder_helper_pybind11> ${PYTHON_PROJECT}/linear_solver/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:pdlp_pybind11> ${PYTHON_PROJECT}/pdlp/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:swig_helper_pybind11> ${PYTHON_PROJECT}/sat/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:rcpsp_pybind11> ${PYTHON_PROJECT}/scheduling/python
+  COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:sorted_interval_list_pybind11> ${PYTHON_PROJECT}/util/python
   #COMMAND ${Python3_EXECUTABLE} setup.py bdist_egg bdist_wheel
   COMMAND ${Python3_EXECUTABLE} setup.py bdist_wheel
   COMMAND ${CMAKE_COMMAND} -E touch ${PROJECT_BINARY_DIR}/python/dist/timestamp
@@ -335,18 +344,18 @@ add_custom_command(
     python/setup.py
     Py${PROJECT_NAME}_proto
     ${PROJECT_NAMESPACE}::ortools
-    pywrapinit
-    pywrapknapsack_solver
+    init_pybind11
+    knapsack_solver_pybind11
     linear_sum_assignment_pybind11
     max_flow_pybind11
     min_cost_flow_pybind11
     pywrapcp
     pywraplp
-    pywrap_model_builder_helper
-    pywrap_pdlp_pybind11
-    swig_helper
-    pywraprcpsp
-    sorted_interval_list
+    model_builder_helper_pybind11
+    pdlp_pybind11
+    swig_helper_pybind11
+    rcpsp_pybind11
+    sorted_interval_list_pybind11
   BYPRODUCTS
     python/${PYTHON_PROJECT}
     python/${PYTHON_PROJECT}.egg-info
@@ -382,7 +391,7 @@ if(BUILD_VENV)
     COMMAND ${VENV_Python3_EXECUTABLE} -m pip install
       --find-links=${CMAKE_CURRENT_BINARY_DIR}/python/dist ${PYTHON_PROJECT}==${PROJECT_VERSION}
     # install modules only required to run examples
-    COMMAND ${VENV_Python3_EXECUTABLE} -m pip install pandas matplotlib pytest
+    COMMAND ${VENV_Python3_EXECUTABLE} -m pip install pandas matplotlib pytest scipy
     BYPRODUCTS ${VENV_DIR}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Create venv and install ${PYTHON_PROJECT}"
@@ -404,17 +413,43 @@ endif()
 ## Doc rules ##
 ###############
 if(BUILD_PYTHON_DOC)
-  find_program(PDOC_PRG NAMES pdoc)
-  if (PDOC_PRG)
-    # add a target to generate API documentation with pdoc
+  # add a target to generate API documentation with Doxygen
+  find_package(Doxygen)
+  if(DOXYGEN_FOUND)
+    configure_file(${PROJECT_SOURCE_DIR}/ortools/python/Doxyfile.in ${PROJECT_BINARY_DIR}/python/Doxyfile @ONLY)
+    file(DOWNLOAD
+      https://raw.githubusercontent.com/jothepro/doxygen-awesome-css/v2.1.0/doxygen-awesome.css
+      ${PROJECT_BINARY_DIR}/python/doxygen-awesome.css
+      SHOW_PROGRESS
+    )
     add_custom_target(${PROJECT_NAME}_python_doc ALL
       #COMMAND ${CMAKE_COMMAND} -E rm -rf ${PROJECT_BINARY_DIR}/docs/python
       COMMAND ${CMAKE_COMMAND} -E make_directory ${PROJECT_BINARY_DIR}/docs/python
+      COMMAND ${DOXYGEN_EXECUTABLE} ${PROJECT_BINARY_DIR}/python/Doxyfile
+      DEPENDS
+        python_package
+        ${PROJECT_BINARY_DIR}/python/Doxyfile
+        ${PROJECT_BINARY_DIR}/python/doxygen-awesome.css
+        ${PROJECT_SOURCE_DIR}/ortools/python/stylesheet.css
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+      COMMENT "Generating Python API documentation with Doxygen"
+      VERBATIM)
+  else()
+    message(WARNING "cmd `doxygen` not found, Python doc generation is disable!")
+  endif()
+
+  # pdoc doc
+  find_program(PDOC_PRG NAMES pdoc)
+  if (PDOC_PRG)
+    # add a target to generate API documentation with pdoc
+    add_custom_target(${PROJECT_NAME}_pdoc_doc ALL
+      #COMMAND ${CMAKE_COMMAND} -E rm -rf ${PROJECT_BINARY_DIR}/docs/pdoc
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${PROJECT_BINARY_DIR}/docs/pdoc
       COMMAND ${PDOC_PRG}
       --logo https://developers.google.com/optimization/images/orLogo.png
       --no-search -d google
       --footer-text "OR-Tools v${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
-      -o ${PROJECT_BINARY_DIR}/docs/python
+      -o ${PROJECT_BINARY_DIR}/docs/pdoc
       ${PROJECT_BINARY_DIR}/python/ortools
       DEPENDS python_package
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}

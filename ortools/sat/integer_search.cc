@@ -22,6 +22,8 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
+#include "absl/meta/type_traits.h"
+#include "absl/random/distributions.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -308,20 +310,6 @@ std::function<BooleanOrIntegerLiteral()> IntegerValueSelectionHeuristic(
     }
   }
 
-  // Relaxation Solution based value.
-  if (parameters.exploit_relaxation_solution()) {
-    auto* relaxation_solutions =
-        model->Get<SharedRelaxationSolutionRepository>();
-    if (relaxation_solutions != nullptr) {
-      value_selection_heuristics.push_back(
-          [model, relaxation_solutions](IntegerVariable var) {
-            VLOG(3) << "Using relaxation solution value selection heuristic.";
-            return SplitUsingBestSolutionValueInRepository(
-                var, *relaxation_solutions, model);
-          });
-    }
-  }
-
   // Objective based value.
   if (parameters.exploit_objective()) {
     value_selection_heuristics.push_back([model](IntegerVariable var) {
@@ -362,6 +350,7 @@ std::function<BooleanOrIntegerLiteral()> ShaveObjectiveLb(Model* model) {
 
     const IntegerValue obj_lb = integer_trail->LowerBound(obj_var);
     const IntegerValue obj_ub = integer_trail->UpperBound(obj_var);
+    if (obj_lb == obj_ub) return result;
     const IntegerValue mid = (obj_ub - obj_lb) / 2;
     const IntegerValue new_ub =
         obj_lb + absl::LogUniform<int64_t>(*random, 0, mid.value());
@@ -541,17 +530,6 @@ std::function<BooleanOrIntegerLiteral()> RandomizeOnRestartHeuristic(
               var, response_manager->SolutionsRepository(), model);
         });
     value_selection_weight.push_back(5);
-  }
-
-  // Relaxation solution based value.
-  auto* relaxation_solutions = model->Get<SharedRelaxationSolutionRepository>();
-  if (relaxation_solutions != nullptr) {
-    value_selection_heuristics.push_back(
-        [model, relaxation_solutions](IntegerVariable var) {
-          return SplitUsingBestSolutionValueInRepository(
-              var, *relaxation_solutions, model);
-        });
-    value_selection_weight.push_back(3);
   }
 
   // Middle value.
@@ -770,10 +748,10 @@ void ConfigureSearchHeuristics(Model* model) {
       base_heuristics.push_back(heuristics.fixed_search);
       for (const auto& ct :
            *(model->GetOrCreate<LinearProgrammingConstraintCollection>())) {
-        base_heuristics.push_back(WrapIntegerLiteralHeuristic(
-            ct->HeuristicLpReducedCostBinary(model)));
-        base_heuristics.push_back(WrapIntegerLiteralHeuristic(
-            ct->HeuristicLpMostInfeasibleBinary(model)));
+        base_heuristics.push_back(
+            WrapIntegerLiteralHeuristic(ct->HeuristicLpReducedCostBinary()));
+        base_heuristics.push_back(
+            WrapIntegerLiteralHeuristic(ct->HeuristicLpMostInfeasibleBinary()));
       }
       heuristics.decision_policies = CompleteHeuristics(
           base_heuristics, SequentialSearch({SatSolverHeuristic(model),

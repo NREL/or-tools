@@ -22,8 +22,8 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/string_view.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
+#include "ortools/base/types.h"
 #include "ortools/graph/iterators.h"
 #include "ortools/util/logging.h"
 #include "ortools/util/string_array.h"
@@ -117,7 +117,7 @@ struct Domain {
 };
 
 // An int var is a name with a domain of possible values, along with
-// some tags. Typically, an Variable is on the heap, and owned by the
+// some tags. Typically, a Variable is on the heap, and owned by the
 // global Model object.
 struct Variable {
   // This method tries to unify two variables. This can happen during the
@@ -175,7 +175,7 @@ struct Argument {
   static Argument FloatValue(double value);
   static Argument FloatInterval(double lb, double ub);
   static Argument FloatList(std::vector<double> floats);
-  static Argument VarRef(Variable* const var);
+  static Argument VarRef(Variable* var);
   static Argument VarRefArray(std::vector<Variable*> vars);
   static Argument VoidArgument();
   static Argument FromDomain(const Domain& domain);
@@ -282,7 +282,7 @@ struct Annotation {
   static Annotation Interval(int64_t interval_min, int64_t interval_max);
   static Annotation IntegerValue(int64_t value);
   static Annotation IntegerList(const std::vector<int64_t>& values);
-  static Annotation VarRef(Variable* const var);
+  static Annotation VarRef(Variable* var);
   static Annotation VarRefArray(std::vector<Variable*> variables);
   static Annotation String(absl::string_view str);
 

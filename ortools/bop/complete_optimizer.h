@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "ortools/bop/bop_base.h"
 #include "ortools/bop/bop_solution.h"
 #include "ortools/bop/bop_types.h"
@@ -45,7 +46,7 @@ namespace bop {
 // TODO(user): Merge this with the code in sat/optimization.cc
 class SatCoreBasedOptimizer : public BopOptimizerBase {
  public:
-  explicit SatCoreBasedOptimizer(const std::string& name);
+  explicit SatCoreBasedOptimizer(absl::string_view name);
   ~SatCoreBasedOptimizer() override;
 
  protected:
@@ -59,16 +60,17 @@ class SatCoreBasedOptimizer : public BopOptimizerBase {
       const ProblemState& problem_state);
   sat::SatSolver::Status SolveWithAssumptions();
 
+  sat::Model model_;
+  sat::SatSolver* sat_solver_;
+  sat::ObjectiveEncoder encoder_;
+
   int64_t state_update_stamp_;
   bool initialized_;
   bool assumptions_already_added_;
-  sat::SatSolver solver_;
   sat::Coefficient offset_;
   sat::Coefficient lower_bound_;
   sat::Coefficient upper_bound_;
   sat::Coefficient stratified_lower_bound_;
-  std::deque<sat::EncodingNode> repository_;
-  std::vector<sat::EncodingNode*> nodes_;
 };
 
 }  // namespace bop

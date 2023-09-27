@@ -53,7 +53,7 @@ class VariableValues {
                  DynamicMaximum<RowIndex>* dual_prices);
 
   // Getters for the variable values.
-  const Fractional Get(ColIndex col) const { return variable_values_[col]; }
+  Fractional Get(ColIndex col) const { return variable_values_[col]; }
   const DenseRow& GetDenseRow() const { return variable_values_; }
 
   // Sets the value of a non-basic variable to the exact value implied by its
@@ -93,7 +93,7 @@ class VariableValues {
   Fractional ComputeSumOfPrimalInfeasibilities() const;
 
   // Updates the variable during a simplex pivot:
-  // - step * direction is substracted from the basic variables value.
+  // - step * direction is subtracted from the basic variables value.
   // - step is added to the entering column value.
   void UpdateOnPivoting(const ScatteredColumn& direction, ColIndex entering_col,
                         Fractional step);

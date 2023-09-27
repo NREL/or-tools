@@ -17,9 +17,9 @@
 #include <utility>
 #include <vector>
 
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/strong_vector.h"
+#include "ortools/base/types.h"
 #include "ortools/constraint_solver/routing_types.h"
 
 namespace operations_research {
@@ -62,7 +62,6 @@ class RoutingIndexManager {
   RoutingIndexManager(
       int num_nodes, int num_vehicles,
       const std::vector<std::pair<NodeIndex, NodeIndex> >& starts_ends);
-  ~RoutingIndexManager() {}
 
   // Returns the number of nodes in the manager.
   int num_nodes() const { return num_nodes_; }

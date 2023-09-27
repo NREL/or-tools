@@ -31,6 +31,7 @@
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -104,6 +105,28 @@ inline IntegerValue FloorRatio(IntegerValue dividend,
   return result - adjust;
 }
 
+// Overflows and saturated arithmetic.
+
+inline IntegerValue CapProdI(IntegerValue a, IntegerValue b) {
+  return IntegerValue(CapProd(a.value(), b.value()));
+}
+
+inline IntegerValue CapSubI(IntegerValue a, IntegerValue b) {
+  return IntegerValue(CapSub(a.value(), b.value()));
+}
+
+inline IntegerValue CapAddI(IntegerValue a, IntegerValue b) {
+  return IntegerValue(CapAdd(a.value(), b.value()));
+}
+
+inline bool ProdOverflow(IntegerValue t, IntegerValue value) {
+  return AtMinOrMaxInt64(CapProd(t.value(), value.value()));
+}
+
+inline bool AtMinOrMaxInt64I(IntegerValue t) {
+  return AtMinOrMaxInt64(t.value());
+}
+
 // Returns dividend - FloorRatio(dividend, divisor) * divisor;
 //
 // This function is around the same speed than the computation above, but it
@@ -117,17 +140,21 @@ inline IntegerValue PositiveRemainder(IntegerValue dividend,
   return m < 0 ? m + positive_divisor : m;
 }
 
+inline bool AddTo(IntegerValue a, IntegerValue* result) {
+  if (AtMinOrMaxInt64I(a)) return false;
+  const IntegerValue add = CapAddI(a, *result);
+  if (AtMinOrMaxInt64I(add)) return false;
+  *result = add;
+  return true;
+}
+
 // Computes result += a * b, and return false iff there is an overflow.
 inline bool AddProductTo(IntegerValue a, IntegerValue b, IntegerValue* result) {
-  const int64_t prod = CapProd(a.value(), b.value());
-  if (prod == std::numeric_limits<int64_t>::min() ||
-      prod == std::numeric_limits<int64_t>::max())
-    return false;
-  const int64_t add = CapAdd(prod, result->value());
-  if (add == std::numeric_limits<int64_t>::min() ||
-      add == std::numeric_limits<int64_t>::max())
-    return false;
-  *result = IntegerValue(add);
+  const IntegerValue prod = CapProdI(a, b);
+  if (AtMinOrMaxInt64I(prod)) return false;
+  const IntegerValue add = CapAddI(prod, *result);
+  if (AtMinOrMaxInt64I(add)) return false;
+  *result = add;
   return true;
 }
 
@@ -250,7 +277,7 @@ using InlinedIntegerValueVector =
 // related constraints.
 struct AffineExpression {
   // Helper to construct an AffineExpression.
-  AffineExpression() {}
+  AffineExpression() = default;
   AffineExpression(IntegerValue cst)  // NOLINT(runtime/explicit)
       : constant(cst) {}
   AffineExpression(IntegerVariable v)  // NOLINT(runtime/explicit)
@@ -267,11 +294,6 @@ struct AffineExpression {
   // or IntegerLiteral::FalseLiteral().
   IntegerLiteral GreaterOrEqual(IntegerValue bound) const;
   IntegerLiteral LowerOrEqual(IntegerValue bound) const;
-
-  // It is safe to call these with non-typed constants.
-  // This simplify the code when we need GreaterOrEqual(0) for instance.
-  IntegerLiteral GreaterOrEqual(int64_t bound) const;
-  IntegerLiteral LowerOrEqual(int64_t bound) const;
 
   AffineExpression Negated() const {
     if (var == kNoIntegerVariable) return AffineExpression(-constant);
@@ -301,7 +323,7 @@ struct AffineExpression {
 
   bool IsConstant() const { return var == kNoIntegerVariable; }
 
-  const std::string DebugString() const {
+  std::string DebugString() const {
     if (var == kNoIntegerVariable) return absl::StrCat(constant.value());
     if (constant == 0) {
       return absl::StrCat("(", coeff.value(), " * X", var.value(), ")");
@@ -319,6 +341,17 @@ struct AffineExpression {
   IntegerValue coeff = IntegerValue(0);      // Zero for constant.
   IntegerValue constant = IntegerValue(0);
 };
+
+template <typename H>
+H AbslHashValue(H h, const AffineExpression& e) {
+  if (e.var != kNoIntegerVariable) {
+    h = H::combine(std::move(h), e.var);
+    h = H::combine(std::move(h), e.coeff);
+  }
+  h = H::combine(std::move(h), e.constant);
+
+  return h;
+}
 
 // A model singleton that holds the root level integer variable domains.
 // we just store a single domain for both var and its negation.
@@ -506,6 +539,7 @@ class IntegerEncoder {
   //
   // Tricky: for domain with hole, like [0,1][5,6], we assume some equivalence
   // classes, like >=2, >=3, >=4 are all the same as >= 5.
+  bool IsFixedOrHasAssociatedLiteral(IntegerLiteral i_lit) const;
   LiteralIndex GetAssociatedLiteral(IntegerLiteral i_lit) const;
   LiteralIndex GetAssociatedEqualityLiteral(IntegerVariable var,
                                             IntegerValue value) const;
@@ -555,7 +589,7 @@ class IntegerEncoder {
   // given literal is true. Returns kNoIntegerVariable if such variable does not
   // exist. Note that one can create one by creating a new IntegerVariable and
   // calling AssociateToIntegerEqualValue().
-  const IntegerVariable GetLiteralView(Literal lit) const {
+  IntegerVariable GetLiteralView(Literal lit) const {
     if (lit.Index() >= literal_view_.size()) return kNoIntegerVariable;
     return literal_view_[lit.Index()];
   }
@@ -579,8 +613,8 @@ class IntegerEncoder {
 
   // Gets the literal always set to true, make it if it does not exist.
   Literal GetTrueLiteral() {
-    DCHECK_EQ(0, sat_solver_->CurrentDecisionLevel());
     if (literal_index_true_ == kNoLiteralIndex) {
+      DCHECK_EQ(0, sat_solver_->CurrentDecisionLevel());
       const Literal literal_true =
           Literal(sat_solver_->NewBooleanVariable(), true);
       literal_index_true_ = literal_true.Index();
@@ -1274,8 +1308,8 @@ class IntegerTrail : public SatPropagator {
 // Base class for CP like propagators.
 class PropagatorInterface {
  public:
-  PropagatorInterface() {}
-  virtual ~PropagatorInterface() {}
+  PropagatorInterface() = default;
+  virtual ~PropagatorInterface() = default;
 
   // This will be called after one or more literals that are watched by this
   // propagator changed. It will also always be called on the first propagation
@@ -1323,7 +1357,7 @@ class RevIntegerValueRepository : public RevRepository<IntegerValue> {
 class GenericLiteralWatcher : public SatPropagator {
  public:
   explicit GenericLiteralWatcher(Model* model);
-  ~GenericLiteralWatcher() final {}
+  ~GenericLiteralWatcher() final = default;
 
   // Memory optimization: you can call this before registering watchers.
   void ReserveSpaceForNumVariables(int num_vars);
@@ -1536,10 +1570,6 @@ inline IntegerLiteral AffineExpression::GreaterOrEqual(
                                         CeilRatio(bound - constant, coeff));
 }
 
-inline IntegerLiteral AffineExpression::GreaterOrEqual(int64_t bound) const {
-  return GreaterOrEqual(IntegerValue(bound));
-}
-
 // var * coeff + constant <= bound.
 inline IntegerLiteral AffineExpression::LowerOrEqual(IntegerValue bound) const {
   if (var == kNoIntegerVariable) {
@@ -1548,10 +1578,6 @@ inline IntegerLiteral AffineExpression::LowerOrEqual(IntegerValue bound) const {
   }
   DCHECK_GT(coeff, 0);
   return IntegerLiteral::LowerOrEqual(var, FloorRatio(bound - constant, coeff));
-}
-
-inline IntegerLiteral AffineExpression::LowerOrEqual(int64_t bound) const {
-  return LowerOrEqual(IntegerValue(bound));
 }
 
 inline IntegerValue IntegerTrail::LowerBound(IntegerVariable i) const {

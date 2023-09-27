@@ -14,8 +14,10 @@
 #include "ortools/linear_solver/proto_solver/sat_proto_solver.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -235,6 +237,7 @@ absl::StatusOr<MPSolutionResponse> SatSolveProto(
           // This is needed for our benchmark scripts.
           sat::CpSolverResponse cp_response;
           cp_response.set_status(sat::CpSolverStatus::UNKNOWN);
+          SOLVER_LOG(&logger, "MIP presolve: problem infeasible or unbounded.");
           LOG(INFO) << CpSolverResponseStats(cp_response);
         }
         response.set_status(MPSolverResponseStatus::MPSOLVER_UNKNOWN_STATUS);

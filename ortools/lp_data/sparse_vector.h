@@ -31,14 +31,15 @@
 #define OR_TOOLS_LP_DATA_SPARSE_VECTOR_H_
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
 
 #include "absl/strings/str_format.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"  // for CHECK*
+#include "ortools/base/types.h"
 #include "ortools/graph/iterators.h"
 #include "ortools/lp_data/lp_types.h"
 #include "ortools/lp_data/permutation.h"

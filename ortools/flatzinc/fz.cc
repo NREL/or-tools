@@ -30,10 +30,10 @@
 #include "absl/log/initialize.h"
 #include "absl/strings/str_split.h"
 #include "ortools/base/commandlineflags.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/path.h"
 #include "ortools/base/timer.h"
+#include "ortools/base/types.h"
 #include "ortools/flatzinc/cp_model_fz_solver.h"
 #include "ortools/flatzinc/model.h"
 #include "ortools/flatzinc/parser.h"
@@ -162,7 +162,7 @@ void LogInFlatzincFormat(const std::string& multi_line_input) {
   const absl::string_view flatzinc_prefix =
       absl::GetFlag(FLAGS_use_flatzinc_format) ? "%% " : "";
   const std::vector<absl::string_view> lines =
-      absl::StrSplit(multi_line_input, '\n', absl::SkipEmpty());
+      absl::StrSplit(multi_line_input, '\n');
   for (const absl::string_view& line : lines) {
     std::cout << flatzinc_prefix << line << std::endl;
   }

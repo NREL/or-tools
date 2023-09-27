@@ -27,7 +27,9 @@
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/meta/type_traits.h"
+#include "absl/numeric/int128.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "ortools/base/logging.h"
@@ -202,6 +204,36 @@ Domain PresolveContext::DomainSuperSetOf(
         DomainOf(expr.vars(i)).MultiplicationBy(expr.coeffs(i)));
   }
   return result;
+}
+
+int64_t PresolveContext::ExpressionDivisor(
+    const LinearExpressionProto& expr) const {
+  int64_t result = 0;
+  DCHECK_LE(expr.vars_size(), 1);
+  if (IsFixed(expr)) {
+    result = std::abs(FixedValue(expr));
+  } else {
+    const int64_t coeff = expr.coeffs(0);
+    const int64_t offset = expr.offset();
+    result = static_cast<int64_t>(
+        MathUtil::GCD64(static_cast<uint64_t>(std::abs(coeff)),
+                        static_cast<uint64_t>(std::abs(offset))));
+  }
+  return result == 0 ? 1 : result;
+}
+
+void PresolveContext::DivideExpression(LinearExpressionProto* expr,
+                                       int64_t divisor) const {
+  CHECK_NE(divisor, 0);
+  if (divisor == 1) return;
+
+  const int64_t pos_divisor = std::abs(divisor);
+  DCHECK_EQ(expr->offset() % pos_divisor, 0);
+  expr->set_offset(expr->offset() / divisor);
+  for (int i = 0; i < expr->vars_size(); ++i) {
+    DCHECK_EQ(expr->coeffs(i) % pos_divisor, 0);
+    expr->set_coeffs(i, expr->coeffs(i) / divisor);
+  }
 }
 
 bool PresolveContext::ExpressionIsAffineBoolean(
@@ -1614,7 +1646,9 @@ bool PresolveContext::CanonicalizeObjective(bool simplify_domain) {
   // We also do not propagate back any domain restriction from the objective to
   // the variables if any.
   for (const auto& entry : tmp_entries_) {
-    if (!CanonicalizeOneObjectiveVariable(entry.first)) return false;
+    if (!CanonicalizeOneObjectiveVariable(entry.first)) {
+      return NotifyThatModelIsUnsat("canonicalize objective one term");
+    }
   }
 
   Domain implied_domain(0);
@@ -1651,22 +1685,25 @@ bool PresolveContext::CanonicalizeObjective(bool simplify_domain) {
       entry.second /= gcd;
     }
     objective_domain_ = objective_domain_.InverseMultiplicationBy(gcd);
-    if (objective_domain_.IsEmpty()) return false;
+    if (objective_domain_.IsEmpty()) {
+      return NotifyThatModelIsUnsat("empty objective domain");
+    }
 
     objective_offset_ /= static_cast<double>(gcd);
     objective_scaling_factor_ *= static_cast<double>(gcd);
 
     // We update the offset accordingly.
-    const absl::int128 offset =
-        absl::int128(objective_integer_before_offset_) *
-            absl::int128(objective_integer_scaling_factor_) +
-        absl::int128(objective_integer_after_offset_);
+    absl::int128 offset = absl::int128(objective_integer_before_offset_) *
+                              absl::int128(objective_integer_scaling_factor_) +
+                          absl::int128(objective_integer_after_offset_);
 
-    if (objective_domain_.IsFixed() && objective_domain_.FixedValue() == 0) {
-      // We avoid a corner case where this would overflow but the objective is
-      // zero. In this case any factor work, so we just take 1 and avoid the
-      // overflow.
+    if (objective_domain_.IsFixed()) {
+      // To avoid overflow in (fixed_value * gcd + before_offset) * factor +
+      // after_offset because the objective is constant (and should fit on an
+      // int64_t), we can rewrite it as fixed_value + offset.
       objective_integer_scaling_factor_ = 1;
+      offset +=
+          absl::int128(gcd - 1) * absl::int128(objective_domain_.FixedValue());
     } else {
       objective_integer_scaling_factor_ *= gcd;
     }
@@ -1675,9 +1712,15 @@ bool PresolveContext::CanonicalizeObjective(bool simplify_domain) {
         offset / absl::int128(objective_integer_scaling_factor_));
     objective_integer_after_offset_ = static_cast<int64_t>(
         offset % absl::int128(objective_integer_scaling_factor_));
+
+    // It is important to update the implied_domain for the "is constraining"
+    // test below.
+    implied_domain = implied_domain.InverseMultiplicationBy(gcd);
   }
 
-  if (objective_domain_.IsEmpty()) return false;
+  if (objective_domain_.IsEmpty()) {
+    return NotifyThatModelIsUnsat("empty objective domain");
+  }
 
   // Detect if the objective domain do not limit the "optimal" objective value.
   // If this is true, then we can apply any reduction that reduce the objective
@@ -1906,6 +1949,18 @@ bool PresolveContext::ShiftCostInExactlyOne(absl::Span<const int> exactly_one,
 
   // Note that the domain never include the offset, so we need to update it.
   if (offset != 0) AddToObjectiveOffset(offset);
+
+  // When we shift the cost using an exactly one, our objective implied bounds
+  // might be more or less precise. If the objective domain is not constraining
+  // (and thus just constraining the upper bound), we relax it to make sure its
+  // stay "non constraining".
+  //
+  // TODO(user): This is a bit hacky, find a nicer way.
+  if (!objective_domain_is_constraining_) {
+    objective_domain_ =
+        Domain(std::numeric_limits<int64_t>::min(), objective_domain_.Max());
+  }
+
   return true;
 }
 
@@ -2063,26 +2118,23 @@ void PresolveContext::LogInfo() {
   }
 }
 
+// Load the constraints in a local model.
+//
+// TODO(user): The model we load does not contain affine relations! But
+// ideally we should be able to remove all of them once we allow more complex
+// constraints to contains linear expression.
+//
+// TODO(user): remove code duplication with cp_model_solver. Here we also do
+// not run the heuristic to decide which variable to fully encode.
+//
+// TODO(user): Maybe do not load slow to propagate constraints? for instance
+// we do not use any linear relaxation here.
 bool LoadModelForProbing(PresolveContext* context, Model* local_model) {
   if (context->ModelIsUnsat()) return false;
 
   // Update the domain in the current CpModelProto.
   context->WriteVariableDomainsToProto();
   const CpModelProto& model_proto = *(context->working_model);
-
-  // Load the constraints in a local model.
-  //
-  // TODO(user): The model we load does not contain affine relations! But
-  // ideally we should be able to remove all of them once we allow more complex
-  // constraints to contains linear expression.
-  //
-  // TODO(user): remove code duplication with cp_model_solver. Here we also do
-  // not run the heuristic to decide which variable to fully encode.
-  //
-  // TODO(user): Maybe do not load slow to propagate constraints? for instance
-  // we do not use any linear relaxation here.
-  Model model;
-  local_model->Register<SolverLogger>(context->logger());
 
   // Adapt some of the parameters during this probing phase.
   auto* local_param = local_model->GetOrCreate<SatParameters>();

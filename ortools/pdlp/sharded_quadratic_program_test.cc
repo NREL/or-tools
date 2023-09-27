@@ -101,10 +101,8 @@ TEST(RescaleProblem, BasicTest) {
   const int num_shards = 10;
   ShardedQuadraticProgram sharded_qp(TestDiagonalQp1(), num_threads,
                                      num_shards);
-  Eigen::VectorXd col_scaling_vec(2);
-  Eigen::VectorXd row_scaling_vec(1);
-  col_scaling_vec << 1, 0.5;
-  row_scaling_vec << 0.5;
+  const Eigen::VectorXd col_scaling_vec{{1, 0.5}};
+  const Eigen::VectorXd row_scaling_vec{{0.5}};
   sharded_qp.RescaleQuadraticProgram(col_scaling_vec, row_scaling_vec);
 
   EXPECT_THAT(sharded_qp.Qp().constraint_lower_bounds, ElementsAre(-kInfinity));
@@ -118,6 +116,17 @@ TEST(RescaleProblem, BasicTest) {
               EigenArrayEq<double>({{0.5}, {0.25}}));
   EXPECT_THAT(sharded_qp.Qp().objective_matrix->diagonal(),
               EigenArrayEq<double>({4, 0.25}));
+}
+
+TEST(ShardedQuadraticProgramTest, ReplaceLargeConstraintBoundsWithInfinity) {
+  const int num_threads = 2;
+  const int num_shards = 2;
+  ShardedQuadraticProgram sharded_qp(TestLp(), num_threads, num_shards);
+  sharded_qp.ReplaceLargeConstraintBoundsWithInfinity(3.0);
+  EXPECT_THAT(sharded_qp.Qp().constraint_lower_bounds,
+              ElementsAre(kInfinity, -kInfinity, -kInfinity, -1));
+  EXPECT_THAT(sharded_qp.Qp().constraint_upper_bounds,
+              ElementsAre(kInfinity, kInfinity, kInfinity, 1));
 }
 
 }  // namespace

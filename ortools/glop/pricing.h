@@ -53,7 +53,7 @@ namespace glop {
 // this case, which is not even the biggest size we can tackle.
 //
 // Note(user): This could be moved to util/ as a general class if someone wants
-// to reuse it, it is however tunned for use in Glop pricing step and might
+// to reuse it, it is however tuned for use in Glop pricing step and might
 // becomes even more specific in the future.
 template <typename Index>
 class DynamicMaximum {
@@ -126,7 +126,7 @@ class DynamicMaximum {
   // In particular, the threshold only increase until the heap becomes empty and
   // is recomputed from scratch by GetMaximum().
   struct HeapElement {
-    HeapElement() {}
+    HeapElement() = default;
     HeapElement(Index i, Fractional v) : index(i), value(v) {}
 
     Index index;
@@ -134,7 +134,7 @@ class DynamicMaximum {
 
     // We want a min-heap: tops_.top() actually represents the k-th value, not
     // the max.
-    const double operator<(const HeapElement& other) const {
+    double operator<(const HeapElement& other) const {
       return value > other.value;
     }
   };

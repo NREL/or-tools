@@ -22,7 +22,11 @@
 
 #include "absl/base/attributes.h"
 #include "absl/container/btree_map.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/meta/type_traits.h"
+#include "absl/types/span.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/stl_util.h"
 #include "ortools/base/strong_vector.h"
@@ -37,55 +41,21 @@
 #include "ortools/sat/integer_expr.h"
 #include "ortools/sat/intervals.h"
 #include "ortools/sat/linear_constraint.h"
-#include "ortools/sat/linear_programming_constraint.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/presolve_util.h"
 #include "ortools/sat/routing_cuts.h"
 #include "ortools/sat/sat_base.h"
 #include "ortools/sat/sat_parameters.pb.h"
 #include "ortools/sat/sat_solver.h"
-#include "ortools/sat/scheduling_constraints.h"
 #include "ortools/sat/scheduling_cuts.h"
+#include "ortools/sat/util.h"
 #include "ortools/util/logging.h"
 #include "ortools/util/saturated_arithmetic.h"
+#include "ortools/util/sorted_interval_list.h"
 #include "ortools/util/strong_integers.h"
 
 namespace operations_research {
 namespace sat {
-
-bool AppendFullEncodingRelaxation(IntegerVariable var, const Model& model,
-                                  LinearRelaxation* relaxation) {
-  const auto* encoder = model.Get<IntegerEncoder>();
-  if (encoder == nullptr) return false;
-  if (!encoder->VariableIsFullyEncoded(var)) return false;
-
-  const auto& encoding = encoder->FullDomainEncoding(var);
-  const IntegerValue var_min = model.Get<IntegerTrail>()->LowerBound(var);
-
-  LinearConstraintBuilder at_least_one(&model, IntegerValue(1),
-                                       kMaxIntegerValue);
-  LinearConstraintBuilder encoding_ct(&model, var_min, var_min);
-  encoding_ct.AddTerm(var, IntegerValue(1));
-
-  // Create the constraint if all literal have a view.
-  std::vector<Literal> at_most_one;
-
-  for (const auto value_literal : encoding) {
-    const Literal lit = value_literal.literal;
-    const IntegerValue delta = value_literal.value - var_min;
-    DCHECK_GE(delta, IntegerValue(0));
-    at_most_one.push_back(lit);
-    if (!at_least_one.AddLiteralTerm(lit, IntegerValue(1))) return false;
-    if (delta != IntegerValue(0)) {
-      if (!encoding_ct.AddLiteralTerm(lit, -delta)) return false;
-    }
-  }
-
-  relaxation->linear_constraints.push_back(at_least_one.Build());
-  relaxation->linear_constraints.push_back(encoding_ct.Build());
-  relaxation->at_most_ones.push_back(at_most_one);
-  return true;
-}
 
 namespace {
 
@@ -640,7 +610,7 @@ void AddRoutesCutGenerator(const ConstraintProto& ct, Model* m,
 
 // Scan the intervals of a cumulative/no_overlap constraint, and its capacity (1
 // for the no_overlap). It returns the index of the makespan interval if found,
-// or -1 otherwise.
+// or std::nullopt otherwise.
 //
 // Currently, this requires the capacity to be fixed in order to scan for a
 // makespan interval.
@@ -653,15 +623,16 @@ void AddRoutesCutGenerator(const ConstraintProto& ct, Model* m,
 //
 // These property ensures that all other intervals ends before the start of
 // the makespan interval.
-int DetectMakespan(const std::vector<IntervalVariable>& intervals,
-                   const std::vector<AffineExpression>& demands,
-                   const AffineExpression& capacity, Model* model) {
+std::optional<int> DetectMakespan(
+    const std::vector<IntervalVariable>& intervals,
+    const std::vector<AffineExpression>& demands,
+    const AffineExpression& capacity, Model* model) {
   IntegerTrail* integer_trail = model->GetOrCreate<IntegerTrail>();
   IntervalsRepository* repository = model->GetOrCreate<IntervalsRepository>();
 
   // TODO(user): Supports variable capacity.
   if (!integer_trail->IsFixed(capacity)) {
-    return -1;
+    return std::nullopt;
   }
 
   // Detect the horizon (max of all end max of all intervals).
@@ -674,46 +645,94 @@ int DetectMakespan(const std::vector<IntervalVariable>& intervals,
 
   const IntegerValue capacity_value = integer_trail->FixedValue(capacity);
   for (int i = 0; i < intervals.size(); ++i) {
-    if (repository->IsAbsent(intervals[i])) continue;
+    if (!repository->IsPresent(intervals[i])) continue;
     const AffineExpression& end = repository->End(intervals[i]);
     if (integer_trail->IsFixed(demands[i]) &&
         integer_trail->FixedValue(demands[i]) == capacity_value &&
         integer_trail->IsFixed(end) &&
         integer_trail->FixedValue(end) == horizon &&
-        integer_trail->LowerBound(repository->Size(intervals[i])) > 0 &&
-        repository->IsPresent(intervals[i])) {
+        integer_trail->LowerBound(repository->Size(intervals[i])) > 0) {
       return i;
     }
   }
-  return -1;
+  return std::nullopt;
 }
+
+namespace {
+
+std::optional<AffineExpression> DetectMakespanFromPrecedences(
+    const SchedulingConstraintHelper& helper, Model* model) {
+  if (helper.NumTasks() == 0) return {};
+
+  const std::vector<AffineExpression>& ends = helper.Ends();
+  std::vector<IntegerVariable> end_vars;
+  for (const AffineExpression& end : ends) {
+    // TODO(user): Deal with constant end.
+    if (end.var == kNoIntegerVariable) return {};
+    if (end.coeff != 1) return {};
+    end_vars.push_back(end.var);
+  }
+
+  std::vector<FullIntegerPrecedence> output;
+  auto* precedences = model->GetOrCreate<PrecedenceRelations>();
+  precedences->ComputeFullPrecedences(end_vars, &output);
+  for (const auto& p : output) {
+    // TODO(user): What if we have more than one candidate makespan ?
+    if (p.indices.size() != ends.size()) continue;
+
+    // We have a Makespan!
+    // We want p.var - min_delta >= max(end).
+    IntegerValue min_delta = kMaxIntegerValue;
+    for (int i = 0; i < p.indices.size(); ++i) {
+      // end_vars[indices[i]] + p.offset[i] <= p.var
+      // [interval_end - end_offset][indices[i]] + p.offset[i] <= p.var
+      //
+      // TODO(user): It is possible this min_delta becomes positive but for a
+      // real makespan, we could make sure it is <= 0. This can happen if we
+      // have an optional interval because we didn't compute the offset assuming
+      // this interval was present. We could potentially fix it if we know that
+      // presence_literal => p.var >= end.
+      min_delta =
+          std::min(min_delta, p.offsets[i] - ends[p.indices[i]].constant);
+    }
+    VLOG(2) << "Makespan detected >= ends + " << min_delta;
+    return AffineExpression(p.var, IntegerValue(1), -min_delta);
+  }
+
+  return {};
+}
+
+}  // namespace
 
 void AppendNoOverlapRelaxationAndCutGenerator(const ConstraintProto& ct,
                                               Model* model,
                                               LinearRelaxation* relaxation) {
   if (HasEnforcementLiteral(ct)) return;
+
   auto* mapping = model->GetOrCreate<CpModelMapping>();
   std::vector<IntervalVariable> intervals =
       mapping->Intervals(ct.no_overlap().intervals());
   const IntegerValue one(1);
   std::vector<AffineExpression> demands(intervals.size(), one);
-  const int makespan_index =
-      DetectMakespan(intervals, demands, /*capacity=*/one, model);
-  std::optional<AffineExpression> makespan;
   IntervalsRepository* repository = model->GetOrCreate<IntervalsRepository>();
 
-  if (makespan_index != -1) {
-    makespan = repository->Start(intervals[makespan_index]);
+  std::optional<AffineExpression> makespan;
+  const std::optional<int> makespan_index =
+      DetectMakespan(intervals, demands, /*capacity=*/one, model);
+  if (makespan_index.has_value()) {
+    makespan = repository->Start(intervals[makespan_index.value()]);
     demands.pop_back();  // the vector is filled with ones.
-    intervals.erase(intervals.begin() + makespan_index);
+    intervals.erase(intervals.begin() + makespan_index.value());
   }
 
   SchedulingConstraintHelper* helper = repository->GetOrCreateHelper(intervals);
   if (!helper->SynchronizeAndSetTimeDirection(true)) return;
-
   SchedulingDemandHelper* demands_helper =
-      new SchedulingDemandHelper(demands, helper, model);
-  model->TakeOwnership(demands_helper);
+      repository->GetOrCreateDemandHelper(helper, demands);
+
+  if (!makespan.has_value()) {
+    makespan = DetectMakespanFromPrecedences(*helper, model);
+  }
 
   AddCumulativeRelaxation(/*capacity=*/one, helper, demands_helper, makespan,
                           model, relaxation);
@@ -732,23 +751,26 @@ void AppendCumulativeRelaxationAndCutGenerator(const ConstraintProto& ct,
   std::vector<AffineExpression> demands =
       mapping->Affines(ct.cumulative().demands());
   const AffineExpression capacity = mapping->Affine(ct.cumulative().capacity());
-  const int makespan_index =
+  const std::optional<int> makespan_index =
       DetectMakespan(intervals, demands, capacity, model);
   std::optional<AffineExpression> makespan;
   IntervalsRepository* repository = model->GetOrCreate<IntervalsRepository>();
-  if (makespan_index != -1) {
+  if (makespan_index.has_value()) {
     // We remove the makespan data from the intervals the demands vector.
-    makespan = repository->Start(intervals[makespan_index]);
-    demands.erase(demands.begin() + makespan_index);
-    intervals.erase(intervals.begin() + makespan_index);
+    makespan = repository->Start(intervals[makespan_index.value()]);
+    demands.erase(demands.begin() + makespan_index.value());
+    intervals.erase(intervals.begin() + makespan_index.value());
   }
 
   // We try to linearize the energy of each task (size * demand).
   SchedulingConstraintHelper* helper = repository->GetOrCreateHelper(intervals);
   if (!helper->SynchronizeAndSetTimeDirection(true)) return;
   SchedulingDemandHelper* demands_helper =
-      new SchedulingDemandHelper(demands, helper, model);
-  model->TakeOwnership(demands_helper);
+      repository->GetOrCreateDemandHelper(helper, demands);
+
+  if (!makespan.has_value()) {
+    makespan = DetectMakespanFromPrecedences(*helper, model);
+  }
 
   // We can now add the relaxation and the cut generators.
   AddCumulativeRelaxation(capacity, helper, demands_helper, makespan, model,
@@ -770,12 +792,6 @@ void AddCumulativeRelaxation(const AffineExpression& capacity,
   const int num_intervals = helper->NumTasks();
   demands_helper->CacheAllEnergyValues();
 
-  std::vector<Literal> presence_literals;
-  std::vector<AffineExpression> starts;
-  std::vector<AffineExpression> ends;
-  std::vector<Literal> clause;
-  std::vector<int> active_interval_indices;
-  bool at_least_one_interval_is_present = false;
   IntegerValue min_of_starts = kMaxIntegerValue;
   IntegerValue max_of_ends = kMinIntegerValue;
   int num_variable_energies = 0;
@@ -783,52 +799,39 @@ void AddCumulativeRelaxation(const AffineExpression& capacity,
   IntegerTrail* integer_trail = model->GetOrCreate<IntegerTrail>();
   for (int index = 0; index < num_intervals; ++index) {
     if (helper->IsAbsent(index)) continue;
-
-    if (helper->IsOptional(index)) {
-      if (demands_helper->EnergyMin(index) == 0) continue;
+    if (helper->IsOptional(index) && demands_helper->EnergyMin(index) >= 0) {
       num_optionals++;
-      const Literal task_lit = helper->PresenceLiteral(index);
-      presence_literals.push_back(task_lit);
-      clause.push_back(task_lit);
-    } else {
-      at_least_one_interval_is_present = true;
-      presence_literals.push_back(
-          model->GetOrCreate<IntegerEncoder>()->GetTrueLiteral());
     }
-    active_interval_indices.push_back(index);
-
-    min_of_starts = std::min(min_of_starts, helper->StartMin(index));
-    max_of_ends = std::max(max_of_ends, helper->EndMax(index));
-
     if (!helper->SizeIsFixed(index) || !demands_helper->DemandIsFixed(index)) {
       num_variable_energies++;
     }
-
-    starts.push_back(helper->Starts()[index]);
-    ends.push_back(helper->Ends()[index]);
+    min_of_starts = std::min(min_of_starts, helper->StartMin(index));
+    max_of_ends = std::max(max_of_ends, helper->EndMax(index));
   }
 
   VLOG(2) << "Span [" << min_of_starts << ".." << max_of_ends << "] with "
           << num_optionals << " optional intervals, and "
           << num_variable_energies << " variable energy tasks out of "
-          << num_intervals << " intervals";
+          << num_intervals << " intervals"
+          << (makespan.has_value() ? ", and 1 makespan" : "");
 
-  // If nothing is variable, the linear relaxation will already be enforced by
-  // the scheduling propagators.
+  // If nothing is variable, the linear relaxation will already be enforced
+  // by the scheduling propagators.
   if (num_variable_energies + num_optionals == 0) return;
 
   LinearConstraintBuilder lc(model, kMinIntegerValue, IntegerValue(0));
-  for (const int i : active_interval_indices) {
-    if (helper->IsOptional(i)) {
-      const IntegerValue energy_min = demands_helper->EnergyMin(i);
-      DCHECK_GT(energy_min, 0);
-      if (!lc.AddLiteralTerm(helper->PresenceLiteral(i), energy_min)) {
+  int num_intervals_added = 0;
+  for (int index = 0; index < num_intervals; ++index) {
+    if (helper->IsAbsent(index)) continue;
+    if (helper->IsOptional(index)) {
+      const IntegerValue energy_min = demands_helper->EnergyMin(index);
+      if (energy_min == 0) continue;
+      if (!lc.AddLiteralTerm(helper->PresenceLiteral(index), energy_min)) {
         return;
       }
-
     } else {
       const std::vector<LiteralValueValue>& product =
-          demands_helper->DecomposedEnergies()[i];
+          demands_helper->DecomposedEnergies()[index];
       if (!product.empty()) {
         // The energy is defined if the vector is not empty.
         if (!lc.AddDecomposedProduct(product)) return;
@@ -836,43 +839,25 @@ void AddCumulativeRelaxation(const AffineExpression& capacity,
         // The energy is not a decomposed product, but it could still be
         // constant or linear. If not, a McCormick relaxation will be
         // introduced. AddQuadraticLowerBound() supports all cases.
-        lc.AddQuadraticLowerBound(helper->Sizes()[i],
-                                  demands_helper->Demands()[i], integer_trail);
+        lc.AddQuadraticLowerBound(helper->Sizes()[index],
+                                  demands_helper->Demands()[index],
+                                  integer_trail);
       }
     }
+    ++num_intervals_added;
   }
-
-  auto* sat_solver = model->GetOrCreate<SatSolver>();
-  const Literal cumulative_is_not_empty =
-      at_least_one_interval_is_present
-          ? model->GetOrCreate<IntegerEncoder>()->GetTrueLiteral()
-          : Literal(model->Add(NewBooleanVariable()), true);
-  if (!at_least_one_interval_is_present) {
-    for (const Literal task_lit : clause) {
-      sat_solver->AddBinaryClause(task_lit.Negated(), cumulative_is_not_empty);
-    }
-    clause.push_back(cumulative_is_not_empty.Negated());
-    sat_solver->AddProblemClause(clause, /*is_safe=*/false);
-  }
+  if (num_intervals_added == 0) return;
 
   // Create and link span_start and span_end to the starts and ends of the
   // tasks.
-  const IntegerVariable span_start =
-      integer_trail->AddIntegerVariable(min_of_starts, max_of_ends);
-  model->Add(EqualMinOfSelectedVariables(cumulative_is_not_empty, span_start,
-                                         starts, presence_literals));
-
+  //
+  // TODO(user): In some cases, we could have only one task that can be
+  // first.
+  const AffineExpression span_start = min_of_starts;
   const AffineExpression span_end =
-      makespan.has_value()
-          ? makespan.value()
-          : integer_trail->AddIntegerVariable(min_of_starts, max_of_ends);
-  if (!makespan.has_value()) {
-    model->Add(EqualMaxOfSelectedVariables(cumulative_is_not_empty, span_end,
-                                           ends, presence_literals));
-  }
+      makespan.has_value() ? makespan.value() : max_of_ends;
   lc.AddTerm(span_end, -integer_trail->UpperBound(capacity));
   lc.AddTerm(span_start, integer_trail->UpperBound(capacity));
-
   relaxation->linear_constraints.push_back(lc.Build());
 }
 
@@ -915,12 +900,13 @@ void AppendNoOverlap2dRelaxation(const ConstraintProto& ct, Model* model,
                            CapSub(y_max.value(), y_min.value())));
   if (max_area == kMaxIntegerValue) return;
 
+  auto* product_decomposer = model->GetOrCreate<ProductDecomposer>();
   LinearConstraintBuilder lc(model, IntegerValue(0), max_area);
   for (int i = 0; i < ct.no_overlap_2d().x_intervals_size(); ++i) {
     if (intervals_repository->IsPresent(x_intervals[i]) &&
         intervals_repository->IsPresent(y_intervals[i])) {
       const std::vector<LiteralValueValue> energy =
-          TryToDecomposeProduct(x_sizes[i], y_sizes[i], model);
+          product_decomposer->TryToDecompose(x_sizes[i], y_sizes[i]);
       if (!energy.empty()) {
         if (!lc.AddDecomposedProduct(energy)) return;
       } else {
@@ -1215,7 +1201,7 @@ void AppendLinearConstraintRelaxation(const ConstraintProto& ct,
 // TODO(user): In full generality, we could encode all the constraint as an LP.
 // TODO(user): Add unit tests for this method.
 // TODO(user): Remove and merge with model loading.
-void TryToLinearizeConstraint(const CpModelProto& model_proto,
+void TryToLinearizeConstraint(const CpModelProto& /*model_proto*/,
                               const ConstraintProto& ct,
                               int linearization_level, Model* model,
                               LinearRelaxation* relaxation,
@@ -1561,12 +1547,18 @@ void AddNoOverlap2dCutGenerator(const ConstraintProto& ct, Model* m,
       mapping->Intervals(ct.no_overlap_2d().x_intervals());
   std::vector<IntervalVariable> y_intervals =
       mapping->Intervals(ct.no_overlap_2d().y_intervals());
-  relaxation->cut_generators.push_back(
-      CreateNoOverlap2dCompletionTimeCutGenerator(x_intervals, y_intervals, m));
 
-  // Checks if at least one rectangle has a variable dimension or is optional.
   IntervalsRepository* intervals_repository =
       m->GetOrCreate<IntervalsRepository>();
+  SchedulingConstraintHelper* x_helper =
+      intervals_repository->GetOrCreateHelper(x_intervals);
+  SchedulingConstraintHelper* y_helper =
+      intervals_repository->GetOrCreateHelper(y_intervals);
+
+  relaxation->cut_generators.push_back(
+      CreateNoOverlap2dCompletionTimeCutGenerator(x_helper, y_helper, m));
+
+  // Checks if at least one rectangle has a variable dimension or is optional.
   bool has_variable_part = false;
   for (int i = 0; i < x_intervals.size(); ++i) {
     // Ignore absent rectangles.
@@ -1591,10 +1583,26 @@ void AddNoOverlap2dCutGenerator(const ConstraintProto& ct, Model* m,
       break;
     }
   }
-  if (has_variable_part) {
-    relaxation->cut_generators.push_back(
-        CreateNoOverlap2dEnergyCutGenerator(x_intervals, y_intervals, m));
+
+  if (!has_variable_part) return;
+
+  SchedulingDemandHelper* x_demands_helper =
+      intervals_repository->GetOrCreateDemandHelper(y_helper,
+                                                    x_helper->Sizes());
+  SchedulingDemandHelper* y_demands_helper =
+      intervals_repository->GetOrCreateDemandHelper(x_helper,
+                                                    y_helper->Sizes());
+
+  std::vector<std::vector<LiteralValueValue>> energies;
+  const int num_rectangles = x_helper->NumTasks();
+  auto* product_decomposer = m->GetOrCreate<ProductDecomposer>();
+  for (int i = 0; i < num_rectangles; ++i) {
+    energies.push_back(product_decomposer->TryToDecompose(
+        x_helper->Sizes()[i], y_helper->Sizes()[i]));
   }
+
+  relaxation->cut_generators.push_back(CreateNoOverlap2dEnergyCutGenerator(
+      x_helper, y_helper, x_demands_helper, y_demands_helper, energies, m));
 }
 
 void AddLinMaxCutGenerator(const ConstraintProto& ct, Model* m,
@@ -1648,25 +1656,17 @@ void AddLinMaxCutGenerator(const ConstraintProto& ct, Model* m,
 // it is harder to detect that if all literal are false then none of the implied
 // value can be taken.
 void AppendElementEncodingRelaxation(Model* m, LinearRelaxation* relaxation) {
-  auto* implied_bounds = m->GetOrCreate<ImpliedBounds>();
+  auto* element_encodings = m->GetOrCreate<ElementEncodings>();
 
   int num_exactly_one_elements = 0;
 
   for (const IntegerVariable var :
-       implied_bounds->GetElementEncodedVariables()) {
+       element_encodings->GetElementEncodedVariables()) {
     for (const auto& [index, literal_value_list] :
-         implied_bounds->GetElementEncodings(var)) {
-      // We only want to deal with the case with duplicate values, because
-      // otherwise, the target will be fully encoded, and this is already
-      // covered by another function.
+         element_encodings->Get(var)) {
       IntegerValue min_value = kMaxIntegerValue;
-      {
-        absl::flat_hash_set<IntegerValue> values;
-        for (const auto& literal_value : literal_value_list) {
-          min_value = std::min(min_value, literal_value.value);
-          values.insert(literal_value.value);
-        }
-        if (values.size() == literal_value_list.size()) continue;
+      for (const auto& literal_value : literal_value_list) {
+        min_value = std::min(min_value, literal_value.value);
       }
 
       LinearConstraintBuilder linear_encoding(m, -min_value, -min_value);
@@ -1722,7 +1722,7 @@ LinearRelaxation ComputeLinearRelaxation(const CpModelProto& model_proto,
     const IntegerVariable var = mapping->Integer(i);
     if (m->Get(IsFixed(var))) continue;
 
-    // We first try to linerize the values encoding.
+    // We first try to linearize the values encoding.
     AppendRelaxationForEqualityEncoding(
         var, *m, &relaxation, &num_tight_equality_encoding_relaxations,
         &num_loose_equality_encoding_relaxations);

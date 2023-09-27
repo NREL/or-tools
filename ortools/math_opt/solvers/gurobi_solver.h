@@ -34,6 +34,7 @@
 #include "ortools/math_opt/core/inverted_bounds.h"
 #include "ortools/math_opt/core/solve_interrupter.h"
 #include "ortools/math_opt/core/solver_interface.h"
+#include "ortools/math_opt/infeasible_subsystem.pb.h"
 #include "ortools/math_opt/model.pb.h"
 #include "ortools/math_opt/model_parameters.pb.h"
 #include "ortools/math_opt/model_update.pb.h"
@@ -61,6 +62,9 @@ class GurobiSolver : public SolverInterface {
       const CallbackRegistrationProto& callback_registration, Callback cb,
       SolveInterrupter* interrupter) override;
   absl::StatusOr<bool> Update(const ModelUpdateProto& model_update) override;
+  absl::StatusOr<InfeasibleSubsystemResultProto> InfeasibleSubsystem(
+      const SolveParametersProto& parameters, MessageCallback message_cb,
+      SolveInterrupter* interrupter) override;
 
  private:
   struct GurobiCallbackData {
@@ -89,13 +93,16 @@ class GurobiSolver : public SolverInterface {
 
   // For easing reading the code, we declare these types:
   using VariableId = int64_t;
+  using AuxiliaryObjectiveId = int64_t;
   using LinearConstraintId = int64_t;
   using QuadraticConstraintId = int64_t;
+  using SecondOrderConeConstraintId = int64_t;
   using Sos1ConstraintId = int64_t;
   using Sos2ConstraintId = int64_t;
   using IndicatorConstraintId = int64_t;
   using AnyConstraintId = int64_t;
   using GurobiVariableIndex = int;
+  using GurobiMultiObjectiveIndex = int;
   using GurobiLinearConstraintIndex = int;
   using GurobiQuadraticConstraintIndex = int;
   using GurobiSosConstraintIndex = int;
@@ -109,6 +116,14 @@ class GurobiSolver : public SolverInterface {
   static constexpr GurobiAnyConstraintIndex kUnspecifiedConstraint = -2;
   static constexpr double kInf = std::numeric_limits<double>::infinity();
 
+  struct GurobiModelElements {
+    std::vector<GurobiVariableIndex> variables;
+    std::vector<GurobiLinearConstraintIndex> linear_constraints;
+    std::vector<GurobiQuadraticConstraintIndex> quadratic_constraints;
+    std::vector<GurobiSosConstraintIndex> sos_constraints;
+    std::vector<GurobiGeneralConstraintIndex> general_constraints;
+  };
+
   // Data associated with each linear constraint. With it we know if the
   // underlying representation is either:
   //   linear_terms <= upper_bound (if lower bound <= -GRB_INFINITY)
@@ -116,6 +131,10 @@ class GurobiSolver : public SolverInterface {
   //   linear_terms == xxxxx_bound (if upper_bound == lower_bound)
   //   linear_term - slack == 0 (with slack bounds equal to xxxxx_bound)
   struct LinearConstraintData {
+    // Returns all Gurobi elements related to this constraint (including the
+    // linear constraint itself). Will CHECK-fail if any element is unspecified.
+    GurobiModelElements DependentElements() const;
+
     GurobiLinearConstraintIndex constraint_index = kUnspecifiedConstraint;
     // only valid for true ranged constraints.
     GurobiVariableIndex slack_index = kUnspecifiedIndex;
@@ -123,7 +142,21 @@ class GurobiSolver : public SolverInterface {
     double upper_bound = kInf;
   };
 
+  struct SecondOrderConeConstraintData {
+    // Returns all Gurobi elements related to this constraint (including the
+    // linear constraint itself). Will CHECK-fail if any element is unspecified.
+    GurobiModelElements DependentElements() const;
+
+    GurobiQuadraticConstraintIndex constraint_index = kUnspecifiedConstraint;
+    std::vector<GurobiVariableIndex> slack_variables;
+    std::vector<GurobiLinearConstraintIndex> slack_constraints;
+  };
+
   struct SosConstraintData {
+    // Returns all Gurobi elements related to this constraint (including the
+    // linear constraint itself). Will CHECK-fail if any element is unspecified.
+    GurobiModelElements DependentElements() const;
+
     GurobiSosConstraintIndex constraint_index = kUnspecifiedConstraint;
     std::vector<GurobiVariableIndex> slack_variables;
     std::vector<GurobiLinearConstraintIndex> slack_constraints;
@@ -157,11 +190,11 @@ class GurobiSolver : public SolverInterface {
   using IdHashMap = gtl::linked_hash_map<int64_t, int>;
 
   absl::StatusOr<ProblemStatusProto> GetProblemStatus(
-      const int grb_termination, const SolutionClaims solution_claims);
+      int grb_termination, SolutionClaims solution_claims);
   absl::StatusOr<SolveResultProto> ExtractSolveResultProto(
       absl::Time start, const ModelSolveParametersProto& model_parameters);
   absl::Status FillRays(const ModelSolveParametersProto& model_parameters,
-                        const SolutionClaims solution_claims,
+                        SolutionClaims solution_claims,
                         SolveResultProto& result);
   absl::StatusOr<GurobiSolver::SolutionsAndClaims> GetSolutions(
       const ModelSolveParametersProto& model_parameters);
@@ -172,6 +205,24 @@ class GurobiSolver : public SolverInterface {
   absl::StatusOr<double> GetBestPrimalBound(bool has_primal_feasible_solution);
   bool PrimalSolutionQualityAvailable() const;
   absl::StatusOr<double> GetPrimalSolutionQuality() const;
+
+  // Returns true if any entry in `grb_elements` is contained in the IIS.
+  absl::StatusOr<bool> AnyElementInIIS(const GurobiModelElements& grb_elements);
+  // Returns which variable bounds are in the IIS, or unset if neither are.
+  absl::StatusOr<std::optional<ModelSubsetProto::Bounds>> VariableBoundsInIIS(
+      GurobiVariableIndex grb_index);
+  // Returns true if any variable bound is contained in the IIS.
+  absl::StatusOr<bool> VariableInIIS(GurobiVariableIndex grb_index);
+  absl::StatusOr<std::optional<ModelSubsetProto::Bounds>> LinearConstraintInIIS(
+      const LinearConstraintData& grb_data);
+  absl::StatusOr<std::optional<ModelSubsetProto::Bounds>>
+  QuadraticConstraintInIIS(GurobiQuadraticConstraintIndex grb_index);
+  // NOTE: Gurobi may claim that an IIS is minimal when the returned message is
+  // not. This occurs because Gurobi does not return variable integrality IIS
+  // attributes, and because internally we apply model transformations to handle
+  // ranged constraints and linear expressions in nonlinear constraints.
+  absl::StatusOr<InfeasibleSubsystemResultProto>
+  ExtractInfeasibleSubsystemResultProto(bool proven_infeasible);
 
   // Warning: is read from gurobi, take care with gurobi update.
   absl::StatusOr<bool> IsMaximize() const;
@@ -192,7 +243,8 @@ class GurobiSolver : public SolverInterface {
   absl::StatusOr<SolutionsAndClaims> GetQcpSolution(
       const ModelSolveParametersProto& model_parameters);
   // Returns solution information appropriate and available for a MIP
-  // (integrality on some/all decision variables).
+  // (integrality on some/all decision variables). Following Gurobi's API, this
+  // is also used for any multi-objective model.
   absl::StatusOr<SolutionsAndClaims> GetMipSolutions(
       const ModelSolveParametersProto& model_parameters);
 
@@ -211,6 +263,9 @@ class GurobiSolver : public SolverInterface {
   absl::Status AddNewQuadraticConstraints(
       const google::protobuf::Map<QuadraticConstraintId,
                                   QuadraticConstraintProto>& constraints);
+  absl::Status AddNewSecondOrderConeConstraints(
+      const google::protobuf::Map<SecondOrderConeConstraintId,
+                                  SecondOrderConeConstraintProto>& constraints);
   absl::Status AddNewSosConstraints(
       const google::protobuf::Map<AnyConstraintId, SosConstraintProto>&
           constraints,
@@ -220,6 +275,19 @@ class GurobiSolver : public SolverInterface {
       const google::protobuf::Map<IndicatorConstraintId,
                                   IndicatorConstraintProto>& constraints);
   absl::Status AddNewVariables(const VariablesProto& new_variables);
+  absl::Status AddSingleObjective(const ObjectiveProto& objective);
+  absl::Status AddMultiObjectives(
+      const ObjectiveProto& primary_objective,
+      const google::protobuf::Map<int64_t, ObjectiveProto>&
+          auxiliary_objectives);
+  // * `objective_id` is the corresponding key into `multi_objectives_map_`; see
+  //   that field for further comment.
+  // * `is_maximize` is true if the entire Gurobi model is the maximization
+  //   sense (only one sense is permitted per model to be shared by all
+  //   objectives). Note that this need not agree with `objective.maximize`.
+  absl::Status AddNewMultiObjective(
+      const ObjectiveProto& objective,
+      std::optional<AuxiliaryObjectiveId> objective_id, bool is_maximize);
   absl::Status AddNewSlacks(
       const std::vector<LinearConstraintData*>& new_slacks);
   absl::Status ChangeCoefficients(const SparseDoubleMatrixProto& matrix);
@@ -280,15 +348,38 @@ class GurobiSolver : public SolverInterface {
 
   absl::StatusOr<std::unique_ptr<GurobiCallbackData>> RegisterCallback(
       const CallbackRegistrationProto& registration, Callback cb,
-      const MessageCallback message_cb, absl::Time start,
+      MessageCallback message_cb, absl::Time start,
       SolveInterrupter* interrupter);
 
   // Returns the ids of variables and linear constraints with inverted bounds.
   absl::StatusOr<InvertedBounds> ListInvertedBounds() const;
 
+  // True if the model is in "multi-objective" mode: That is, at some point it
+  // has been modified via the multi-objective API.
+  bool is_multi_objective_mode() const;
+
   // Returns the ids of indicator constraint/variables that are invalid because
   // the indicator is not a binary variable.
   absl::StatusOr<InvalidIndicators> ListInvalidIndicators() const;
+
+  struct VariableEqualToExpression {
+    GurobiVariableIndex variable_index;
+    GurobiLinearConstraintIndex constraint_index;
+  };
+
+  // If `expression` is equivalent to a single variable in the model, returns
+  // the corresponding MathOpt variable ID. Otherwise, returns nullopt.
+  std::optional<VariableId> TryExtractVariable(
+      const LinearExpressionProto& expression);
+  // Returns a Gurobi variable that is constrained to be equal to `expression`
+  // in `.variable_index`. The variable is newly added to the model and
+  // `.constraint_index` is set and refers to the Gurobi linear constraint index
+  // for a slack constraint just added to the model such that:
+  // `expression` == `.variable_index`.
+  // TODO(b/267310257): Use this for linear constraint slacks, and maybe move it
+  // up the stack to a bridge.
+  absl::StatusOr<VariableEqualToExpression>
+  CreateSlackVariableEqualToExpression(const LinearExpressionProto& expression);
 
   const std::unique_ptr<Gurobi> gurobi_;
 
@@ -301,6 +392,11 @@ class GurobiSolver : public SolverInterface {
   // Internal correspondence from variable proto IDs to Gurobi-numbered
   // variables.
   gtl::linked_hash_map<VariableId, GurobiVariableIndex> variables_map_;
+  // An unset key corresponds to the `ModelProto.objective` field; all other
+  // entries come from `ModelProto.auxiliary_objectives`.
+  absl::flat_hash_map<std::optional<AuxiliaryObjectiveId>,
+                      GurobiMultiObjectiveIndex>
+      multi_objectives_map_;
   // Internal correspondence from linear constraint proto IDs to
   // Gurobi-numbered linear constraint and extra information.
   gtl::linked_hash_map<LinearConstraintId, LinearConstraintData>
@@ -309,6 +405,11 @@ class GurobiSolver : public SolverInterface {
   // Gurobi-numbered quadratic constraint.
   absl::flat_hash_map<QuadraticConstraintId, GurobiQuadraticConstraintIndex>
       quadratic_constraints_map_;
+  // Internal correspondence from second-order cone constraint proto IDs to
+  // corresponding Gurobi information.
+  absl::flat_hash_map<SecondOrderConeConstraintId,
+                      SecondOrderConeConstraintData>
+      soc_constraints_map_;
   // Internal correspondence from SOS1 constraint proto IDs to Gurobi-numbered
   // SOS constraint (Gurobi ids are shared between SOS1 and SOS2).
   absl::flat_hash_map<Sos1ConstraintId, SosConstraintData>

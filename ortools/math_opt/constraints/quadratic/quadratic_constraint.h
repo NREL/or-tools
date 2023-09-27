@@ -24,11 +24,10 @@
 #include <string>
 #include <vector>
 
-#include "absl/strings/string_view.h"
 #include "absl/log/check.h"
+#include "absl/strings/string_view.h"
 #include "ortools/base/strong_int.h"
 #include "ortools/math_opt/constraints/util/model_util.h"
-#include "ortools/math_opt/cpp/id_map.h"  // IWYU pragma: export
 #include "ortools/math_opt/cpp/key_types.h"
 #include "ortools/math_opt/cpp/variable_and_expressions.h"
 #include "ortools/math_opt/storage/model_storage.h"
@@ -73,6 +72,16 @@ class QuadraticConstraint {
   // not defined.
   inline std::vector<Variable> NonzeroVariables() const;
 
+  // Returns the constraints as a bounded quadratic expression.
+  //
+  // The quadratic expression will have a zero offset, even if the constraint
+  // was created with a non-zero one. For example:
+  //
+  //   const LinearConstraint c =
+  //     model.AddQuadraticConstraint(3.2 <= x*x + 1.0 <= 4.2);
+  //
+  //   // Here `e` will contain 3.2 - 1.0 <= x*x <= 4.2 - 1.0.
+  //   const BoundedQuadraticExpression e = c.AsBoundedQuadraticExpression();
   BoundedQuadraticExpression AsBoundedQuadraticExpression() const;
 
   // Returns a detailed string description of the contents of the constraint
@@ -92,11 +101,6 @@ class QuadraticConstraint {
   const ModelStorage* storage_;
   QuadraticConstraintId id_;
 };
-
-// Implements the API of std::unordered_map<QuadraticConstraint, V>, but forbids
-// QuadraticConstraints from different models in the same map.
-template <typename V>
-using QuadraticConstraintMap = IdMap<QuadraticConstraint, V>;
 
 // Streams the name of the constraint, as registered upon constraint creation,
 // or a short default if none was provided.

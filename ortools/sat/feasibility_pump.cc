@@ -16,12 +16,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/meta/type_traits.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/strong_vector.h"
@@ -211,7 +211,7 @@ void FeasibilityPump::MaybePushToRepo() {
         lp_solution[model_var] = GetLPSolutionValue(positive_var);
       }
     }
-    incomplete_solutions_->AddNewSolution(lp_solution);
+    incomplete_solutions_->AddSolution(lp_solution);
   }
 
   if (integer_solution_is_feasible_) {
@@ -223,7 +223,7 @@ void FeasibilityPump::MaybePushToRepo() {
         lp_solution[model_var] = GetIntegerSolutionValue(positive_var);
       }
     }
-    incomplete_solutions_->AddNewSolution(lp_solution);
+    incomplete_solutions_->AddSolution(lp_solution);
   }
 }
 

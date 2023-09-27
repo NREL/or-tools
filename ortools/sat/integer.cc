@@ -23,8 +23,12 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/meta/type_traits.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "ortools/base/logging.h"
@@ -513,6 +517,14 @@ void IntegerEncoder::AssociateToIntegerEqualValue(Literal literal,
   reverse_equality_encoding_[literal.Index()].push_back({var, value});
 }
 
+bool IntegerEncoder::IsFixedOrHasAssociatedLiteral(IntegerLiteral i_lit) const {
+  if (!VariableIsPositive(i_lit.var)) i_lit = i_lit.Negated();
+  const PositiveOnlyIndex index = GetPositiveOnlyIndex(i_lit.var);
+  if (i_lit.bound <= domains_[index].Min()) return true;
+  if (i_lit.bound > domains_[index].Max()) return true;
+  return GetAssociatedLiteral(i_lit) != kNoLiteralIndex;
+}
+
 // TODO(user): Canonicalization might be slow.
 LiteralIndex IntegerEncoder::GetAssociatedLiteral(IntegerLiteral i_lit) const {
   IntegerValue bound;
@@ -872,6 +884,8 @@ bool IntegerTrail::UpdateInitialDomain(IntegerVariable var, Domain domain) {
   if (old_domain == domain) return true;
 
   if (domain.IsEmpty()) return false;
+  const bool lb_changed = domain.Min() > old_domain.Min();
+  const bool ub_changed = domain.Max() < old_domain.Max();
   (*domains_)[index] = domain;
 
   // Update directly the level zero bounds.
@@ -885,6 +899,12 @@ bool IntegerTrail::UpdateInitialDomain(IntegerVariable var, Domain domain) {
   integer_trail_[var.value()].bound = domain.Min();
   vars_[NegationOf(var)].current_bound = -domain.Max();
   integer_trail_[NegationOf(var).value()].bound = -domain.Max();
+
+  // Do not forget to update the watchers.
+  for (SparseBitset<IntegerVariable>* bitset : watchers_) {
+    if (lb_changed) bitset->Set(var);
+    if (ub_changed) bitset->Set(NegationOf(var));
+  }
 
   // Update the encoding.
   return encoder_->UpdateEncodingOnInitialDomainChange(var, domain);

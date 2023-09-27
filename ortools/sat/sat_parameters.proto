@@ -23,7 +23,7 @@ option csharp_namespace = "Google.OrTools.Sat";
 // Contains the definitions for all the sat algorithm parameters and their
 // default values.
 //
-// NEXT TAG: 235
+// NEXT TAG: 256
 message SatParameters {
   // In some context, like in a portfolio of search, it makes sense to name a
   // given parameters set for logging purpose.
@@ -388,8 +388,9 @@ message SatParameters {
 
   // Whether the solver should display per sub-solver search statistics.
   // This is only useful is log_search_progress is set to true, and if the
-  // number of search workers is > 1.
-  optional bool log_subsolver_statistics = 189 [default = true];
+  // number of search workers is > 1. Note that in all case we display a bit
+  // of stats with one line per subsolver.
+  optional bool log_subsolver_statistics = 189 [default = false];
 
   // Add a prefix to all logs.
   optional string log_prefix = 185 [default = ""];
@@ -610,8 +611,7 @@ message SatParameters {
   repeated string subsolvers = 207;
 
   // A convenient way to add more workers types.
-  // Note that these will be added at the end of the list, so this is only
-  // useful if you run with many workers.
+  // These will be added at the beginning of the list.
   repeated string extra_subsolvers = 219;
 
   // Rather than fully specifying subsolvers, it is often convenient to just
@@ -799,6 +799,10 @@ message SatParameters {
   // reasoning.
   optional bool use_energetic_reasoning_in_no_overlap_2d = 213
       [default = false];
+
+  // Performs an extra step of propagation in the no_overlap_2d constraint by
+  // looking at all pairs of intervals.
+  optional bool use_pairwise_reasoning_in_no_overlap_2d = 251 [default = false];
 
   // When set, it activates a few scheduling parameters to improve the lower
   // bound of scheduling problems. This is only effective with multiple workers
@@ -1032,6 +1036,11 @@ message SatParameters {
   // minimizing) starting from the lower bound of the objective.
   optional bool use_objective_lb_search = 228 [default = false];
 
+  // This search differs from the previous search as it will not use assumptions
+  // to bound the objective, and it will recreate a full model with the
+  // hardcoded objective value.
+  optional bool use_objective_shaving_search = 253 [default = false];
+
   // The solver ignores the pseudo costs of variables with number of recordings
   // less than this threshold.
   optional int64 pseudo_cost_reliability_threshold = 123 [default = 100];
@@ -1062,6 +1071,94 @@ message SatParameters {
   // "Automatic Logic-Based Benders Decomposition with MiniZinc"
   // http://aaai.org/ocs/index.php/AAAI/AAAI17/paper/view/14489
   optional bool optimize_with_max_hs = 85 [default = false];
+
+  // Parameters for an heuristic similar to the one described in the paper:
+  // "Feasibility Jump: an LP-free Lagrangian MIP heuristic", Bjørnar
+  // Luteberget, Giorgio Sartor, 2023, Mathematical Programming Computation.
+  //
+  // The test_feasibility_jump is used to only enable this for benchmarking.
+  optional bool test_feasibility_jump = 240 [default = false];
+
+  // Max number of values scanned when scanning the domain of a variable.
+  // This number is checked to be >= 2 and <= 1e9.
+  optional int64 feasibility_jump_max_num_values_scanned = 245 [default = 4096];
+
+  // Feasibility jump focuses on the linear model, then switches to the full
+  // model when a linear feasible assignment is found. In the second phase, this
+  // parameters favors moves that keep the linear assignment feasible over move
+  // that will break it.
+  optional bool feasibility_jump_protect_linear_feasibility = 246
+      [default = true];
+
+  // The following feasibility_jump parameters are meant to be used by the
+  // solver on the different workers that use feasibility_jump.
+  optional double feasibility_jump_decay = 242 [default = 1.0];
+
+  // Probability for a variable to have a non default value upon restarts or
+  // perturbations.
+  optional double feasibility_jump_var_randomization_probability = 247
+      [default = 0.0];
+
+  // Max distance between the default value and the pertubated value relative to
+  // the range of the domain of the variable.
+  optional double feasibility_jump_var_perburbation_range_ratio = 248
+      [default = 0.2];
+
+  // When stagnating, feasibility jump will either restart from a default
+  // solution (with some possible randomization), or randomly pertubate the
+  // current solution. This parameter selects the first option.
+  optional bool feasibility_jump_enable_restarts = 250 [default = true];
+
+  // This will create incomplete subsolvers (that are not LNS subsolvers)
+  // that use the feasibility jump code to find improving solution, treating
+  // the objective improvement as a hard constraint.
+  optional int32 num_violation_ls = 244 [default = 0];
+
+  // How long violation_ls should wait before perturbating a solution.
+  optional int32 violation_ls_perturbation_period = 249 [default = 100];
+
+  // Enables experimental workstealing-like shared tree search.
+  // If non-zero, start this many complete worker threads to explore a shared
+  // search tree. These workers communicate objective bounds and simple decision
+  // nogoods relating to the shared prefix of the tree, and will avoid exploring
+  // the same subtrees as one another.
+  optional int32 shared_tree_num_workers = 235 [default = 0];
+
+  // Set on shared subtree workers. Users should not set this directly.
+  optional bool use_shared_tree_search = 236 [default = false];
+
+  // After their assigned prefix, shared tree workers will branch on the
+  // objective with this probability. Higher numbers cause the shared tree
+  // search to focus on improving the lower bound over finding primal solutions.
+  optional double shared_tree_worker_objective_split_probability = 237
+      [default = 0.5];
+
+  // In order to limit total shared memory and communication overhead, limit the
+  // total number of nodes that may be generated in the shared tree. If the
+  // shared tree runs out of unassigned leaves, workers act as portfolio
+  // workers. Note: this limit includes interior nodes, not just leaves.
+  optional int32 shared_tree_max_nodes_per_worker = 238 [default = 128];
+
+  enum SharedTreeSplitStrategy {
+    // Uses the default strategy, currently equivalent to
+    // SPLIT_STRATEGY_DISCREPANCY.
+    SPLIT_STRATEGY_AUTO = 0;
+    // Only accept splits if the node to be split's depth+discrepancy is minimal
+    // for the desired number of leaves.
+    // The preferred child for discrepancy calculation is the one with the
+    // lowest objective lower bound or the original branch direction if the
+    // bounds are equal. This rule allows twice as many workers to work in the
+    // preferred subtree as non-preferred.
+    SPLIT_STRATEGY_DISCREPANCY = 1;
+    // Only split nodes with an objective lb equal to the global lb.
+    SPLIT_STRATEGY_OBJECTIVE_LB = 2;
+    // Attempt to keep the shared tree balanced.
+    SPLIT_STRATEGY_BALANCED_TREE = 3;
+    // Workers race to split their subtree, the winner's proposal is accepted.
+    SPLIT_STRATEGY_FIRST_PROPOSAL = 4;
+  }
+  optional SharedTreeSplitStrategy shared_tree_split_strategy = 239
+      [default = SPLIT_STRATEGY_AUTO];
 
   // Whether we enumerate all solutions of a problem without objective. Note
   // that setting this to true automatically disable some presolve reduction
@@ -1117,8 +1214,9 @@ message SatParameters {
   optional bool stop_after_first_solution = 98 [default = false];
 
   // Mainly used when improving the presolver. When true, stops the solver after
-  // the presolve is complete.
+  // the presolve is complete (or after loading and root level propagation).
   optional bool stop_after_presolve = 149 [default = false];
+  optional bool stop_after_root_propagation = 252 [default = false];
 
   // LNS parameters.
   optional bool use_lns_only = 101 [default = false];
@@ -1133,6 +1231,11 @@ message SatParameters {
 
   // Adds a feasibility pump subsolver along with lns subsolvers.
   optional bool use_feasibility_pump = 164 [default = true];
+
+  // Turns on neighborhood generator based on local branching LP. Based on Huang
+  // et al., "Local Branching Relaxation Heuristics for Integer Linear
+  // Programs", 2023.
+  optional bool use_lb_relax_lns = 255 [default = false];
 
   // Rounding method to use for feasibility pump.
   enum FPRoundingMethod {
@@ -1157,11 +1260,6 @@ message SatParameters {
     PROPAGATION_ASSISTED = 2;
   }
   optional FPRoundingMethod fp_rounding = 165 [default = PROPAGATION_ASSISTED];
-
-  // Adds the objective_lns worker if the objective contains more than the given
-  // number of variables. We use a int32max default value to effectively disable
-  // this lns worker by default.
-  optional int32 objective_lns_min_size = 231 [default = 2147483647];
 
   // If true, registers more lns subsolvers with different parameters.
   optional bool diversify_lns_params = 137 [default = false];

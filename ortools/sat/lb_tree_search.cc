@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include "absl/random/distributions.h"
+#include "absl/log/check.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -455,6 +455,7 @@ SatSolver::Status LbTreeSearch::Search(
       } else {
         // See if we have better bounds using the current LP state.
         ExploitReducedCosts(current_branch_[level]);
+        if (node.MinObjective() > current_objective_lb_) break;
 
         // If both lower bound are the same, we pick the literal branch. We do
         // that because this is the polarity that was chosen by the SAT
@@ -698,7 +699,7 @@ void LbTreeSearch::ExploitReducedCosts(NodeIndex n) {
   // gain.
   const auto& cts = lp_constraint_->OptimalConstraints();
   if (cts.empty()) return;
-  const std::unique_ptr<IntegerSumLE>& rc = cts.back();
+  const std::unique_ptr<IntegerSumLE128>& rc = cts.back();
 
   // Note that this return literal EQUIVALENT to the node.literal, not just
   // implied by it. We need that for correctness.

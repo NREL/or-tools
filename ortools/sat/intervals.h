@@ -18,17 +18,21 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
-#include "ortools/base/integral_types.h"
-#include "ortools/base/logging.h"
+#include "absl/types/span.h"
 #include "ortools/base/macros.h"
 #include "ortools/base/strong_vector.h"
 #include "ortools/sat/cp_constraints.h"
+#include "ortools/sat/implied_bounds.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/integer_expr.h"
+#include "ortools/sat/linear_constraint.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/pb_constraint.h"
 #include "ortools/sat/precedences.h"
@@ -44,6 +48,7 @@ DEFINE_STRONG_INDEX_TYPE(IntervalVariable);
 const IntervalVariable kNoIntervalVariable(-1);
 
 class SchedulingConstraintHelper;
+class SchedulingDemandHelper;
 
 // This class maintains a set of intervals which correspond to three integer
 // variables (start, end and size). It automatically registers with the
@@ -93,7 +98,7 @@ class IntervalsRepository {
   // Fixed size intervals will have a kNoIntegerVariable as size.
   //
   // Note: For an optional interval, the start/end variables are propagated
-  // asssuming the interval is present. Because of that, these variables can
+  // assuming the interval is present. Because of that, these variables can
   // cross each other or have an empty domain. If any of this happen, then the
   // PresenceLiteral() of this interval will be propagated to false.
   AffineExpression Size(IntervalVariable i) const { return sizes_[i]; }
@@ -147,6 +152,16 @@ class IntervalsRepository {
   SchedulingConstraintHelper* GetOrCreateHelper(
       const std::vector<IntervalVariable>& variables);
 
+  // Returns a SchedulingDemandHelper corresponding to the given helper and
+  // demands. Note that the order of interval in the helper and the order of
+  // demands must be the compatible.
+  SchedulingDemandHelper* GetOrCreateDemandHelper(
+      SchedulingConstraintHelper* helper,
+      const std::vector<AffineExpression>& demands);
+
+  // Calls InitDecomposedEnergies on all SchedulingDemandHelper created.
+  void InitAllDecomposedEnergies();
+
  private:
   // External classes needed.
   Model* model_;
@@ -167,6 +182,10 @@ class IntervalsRepository {
   absl::flat_hash_map<std::vector<IntervalVariable>,
                       SchedulingConstraintHelper*>
       helper_repository_;
+  absl::flat_hash_map<
+      std::pair<SchedulingConstraintHelper*, std::vector<AffineExpression>>,
+      SchedulingDemandHelper*>
+      demand_helper_repository_;
 
   DISALLOW_COPY_AND_ASSIGN(IntervalsRepository);
 };
@@ -355,7 +374,7 @@ class SchedulingConstraintHelper : public PropagatorInterface,
   //
   // Important: IncreaseStartMin() and DecreaseEndMax() can be called on an
   // optional interval whose presence is still unknown and push a bound
-  // conditionned on its presence. The functions will do the correct thing
+  // conditioned on its presence. The functions will do the correct thing
   // depending on whether or not the start_min/end_max are optional variables
   // whose presence implies the interval presence.
   ABSL_MUST_USE_RESULT bool IncreaseStartMin(int t, IntegerValue value);
@@ -397,6 +416,8 @@ class SchedulingConstraintHelper : public PropagatorInterface,
     map_to_other_helper_ = map_to_other_helper;
     event_for_other_helper_ = event;
   }
+
+  bool HasOtherHelper() const { return other_helper_ != nullptr; }
 
   void ClearOtherHelper() { other_helper_ = nullptr; }
 
@@ -451,7 +472,7 @@ class SchedulingConstraintHelper : public PropagatorInterface,
   std::vector<AffineExpression> minus_starts_;
   std::vector<AffineExpression> minus_ends_;
 
-  // This is used by SetLevel() to dected untrail.
+  // This is used by SetLevel() to detect untrail.
   int previous_level_ = 0;
 
   // The caches of all relevant interval values.
@@ -579,6 +600,10 @@ class SchedulingDemandHelper {
   // Important: first value is size, second value is demand.
   std::vector<LiteralValueValue> FilteredDecomposedEnergy(int index);
 
+  // Init all decomposed energies. It needs probing to be finished. This happens
+  // after the creation of the helper.
+  void InitDecomposedEnergies();
+
  private:
   IntegerValue SimpleEnergyMin(int t) const;
   IntegerValue LinearEnergyMin(int t) const;
@@ -588,6 +613,7 @@ class SchedulingDemandHelper {
   IntegerValue DecomposedEnergyMax(int t) const;
 
   IntegerTrail* integer_trail_;
+  ProductDecomposer* product_decomposer_;
   SatSolver* sat_solver_;  // To get the current propagation level.
   const VariablesAssignment& assignment_;
   std::vector<AffineExpression> demands_;

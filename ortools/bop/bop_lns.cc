@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "absl/memory/memory.h"
+#include "absl/strings/string_view.h"
 #include "google/protobuf/text_format.h"
 #include "ortools/base/cleanup.h"
 #include "ortools/base/commandlineflags.h"
@@ -55,12 +56,12 @@ void UseBopSolutionForSatAssignmentPreference(const BopSolution& solution,
 }  // namespace
 
 BopCompleteLNSOptimizer::BopCompleteLNSOptimizer(
-    const std::string& name, const BopConstraintTerms& objective_terms)
+    absl::string_view name, const BopConstraintTerms& objective_terms)
     : BopOptimizerBase(name),
       state_update_stamp_(ProblemState::kInitialStampValue),
       objective_terms_(objective_terms) {}
 
-BopCompleteLNSOptimizer::~BopCompleteLNSOptimizer() {}
+BopCompleteLNSOptimizer::~BopCompleteLNSOptimizer() = default;
 
 BopOptimizerBase::Status BopCompleteLNSOptimizer::SynchronizeIfNeeded(
     const ProblemState& problem_state, int num_relaxed_vars) {
@@ -211,7 +212,7 @@ bool UseLinearRelaxationForSatAssignmentPreference(
 // increased anyway. Maybe a better approach is to start by relaxing something
 // like 10 variables instead of having a fixed percentage.
 BopAdaptiveLNSOptimizer::BopAdaptiveLNSOptimizer(
-    const std::string& name, bool use_lp_to_guide_sat,
+    absl::string_view name, bool use_lp_to_guide_sat,
     NeighborhoodGenerator* neighborhood_generator,
     sat::SatSolver* sat_propagator)
     : BopOptimizerBase(name),
@@ -222,7 +223,7 @@ BopAdaptiveLNSOptimizer::BopAdaptiveLNSOptimizer(
   CHECK(sat_propagator != nullptr);
 }
 
-BopAdaptiveLNSOptimizer::~BopAdaptiveLNSOptimizer() {}
+BopAdaptiveLNSOptimizer::~BopAdaptiveLNSOptimizer() = default;
 
 bool BopAdaptiveLNSOptimizer::ShouldBeRun(
     const ProblemState& problem_state) const {

@@ -26,7 +26,9 @@
 #include <utility>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "ortools/base/integral_types.h"
+#include "ortools/util/stats.h"
 
 #if !defined(__PORTABLE_PLATFORM__)
 #include "ortools/base/threadpool.h"
@@ -44,26 +46,9 @@ class SubSolver {
  public:
   enum SubsolverType { FULL_PROBLEM, FIRST_SOLUTION, INCOMPLETE, HELPER };
 
-  SubSolver(const std::string& name, SubsolverType type)
+  SubSolver(absl::string_view name, SubsolverType type)
       : name_(name), type_(type) {}
-  virtual ~SubSolver() {}
-
-  // Returns true iff GenerateTask() can be called.
-  //
-  // Note(user): In the current design, a SubSolver is never deleted until the
-  // end of the Solve() that created it. But is is okay to always return false
-  // here and release the memory used by the Subsolver internal if there is no
-  // need to call this Subsolver ever again. The overhead of iterating over it
-  // in the main solver loop should be minimal.
-  virtual bool TaskIsAvailable() = 0;
-
-  // Returns a task to run. The task_id is just an ever increasing counter that
-  // correspond to the number of total calls to GenerateTask().
-  //
-  // TODO(user): We could use a more complex selection logic and pass in the
-  // deterministic time limit this subtask should run for. Unclear at this
-  // stage.
-  virtual std::function<void()> GenerateTask(int64_t task_id) = 0;
+  virtual ~SubSolver() = default;
 
   // Synchronizes with the external world from this SubSolver point of view.
   // Also incorporate the results of the latest completed tasks if any.
@@ -72,14 +57,34 @@ class SubSolver {
   // update asynchronously (and so non-deterministically) global "shared"
   // classes, but this global state is incorporated by the Subsolver only when
   // Synchronize() is called.
+  //
+  // This is only called by the main thread in Subsolver creation order.
   virtual void Synchronize() = 0;
 
-  // Returns the score as updated by the completed tasks before the last
-  // Synchronize() call. Everything else being equal, we prefer to run a
-  // SubSolver with the highest score.
+  // Returns true if this SubSolver is done and its memory can be freed. Note
+  // that the *Loop(subsolvers) functions below takes a reference in order to be
+  // able to clear the memory of a SubSolver as soon as it is done. Once this is
+  // true, the subsolver in question will be deleted and never used again.
   //
-  // TODO(user): This is unused for now.
-  double score() const { return score_; }
+  // This is needed since some subsolve can be done before the overal Solve() is
+  // finished. This is the case for first solution subsolvers for instances.
+  //
+  // This is only called by the main thread in a sequential fashion.
+  virtual bool IsDone() { return false; }
+
+  // Returns true iff GenerateTask() can be called.
+  // This is only called by the main thread in a sequential fashion.
+  virtual bool TaskIsAvailable() = 0;
+
+  // Returns a task to run. The task_id is just an ever increasing counter that
+  // correspond to the number of total calls to GenerateTask().
+  //
+  // TODO(user): We could use a more complex selection logic and pass in the
+  // deterministic time limit this subtask should run for. Unclear at this
+  // stage.
+  //
+  // This is only called by the main thread.
+  virtual std::function<void()> GenerateTask(int64_t task_id) = 0;
 
   // Returns the total deterministic time spend by the completed tasks before
   // the last Synchronize() call.
@@ -93,19 +98,50 @@ class SubSolver {
 
   // Returns search statistics.
   virtual std::string StatisticsString() const { return std::string(); }
+  virtual std::vector<std::string> TableLineStats() const { return {}; }
 
- protected:
+  // Note that this is protected by the global execution mutex and so it is
+  // called sequentially. Subclasses do not need to call this.
+  void AddTaskDuration(double duration_in_seconds) {
+    timing_.AddTimeInSec(duration_in_seconds);
+  }
+
+  // This one need to be called by the Subclasses. Usually from Synchronize(),
+  // or from the task itself it we execute a single task at the same time.
+  void AddTaskDeterministicDuration(double deterministic_duration) {
+    if (deterministic_duration <= 0) return;
+    deterministic_time_ += deterministic_duration;
+    dtiming_.AddTimeInSec(deterministic_duration);
+  }
+
+  std::string TimingInfo() const {
+    // TODO(user): remove trailing "\n" from ValueAsString() or just build the
+    // table line directly.
+    std::string data = timing_.ValueAsString();
+    if (!data.empty()) data.pop_back();
+    return data;
+  }
+
+  std::string DeterministicTimingInfo() const {
+    // TODO(user): remove trailing "\n" from ValueAsString().
+    std::string data = dtiming_.ValueAsString();
+    if (!data.empty()) data.pop_back();
+    return data;
+  }
+
+ private:
   const std::string name_;
   const SubsolverType type_;
-  double score_ = 0.0;
+
   double deterministic_time_ = 0.0;
+  TimeDistribution timing_ = TimeDistribution("task time");
+  TimeDistribution dtiming_ = TimeDistribution("task dtime");
 };
 
 // A simple wrapper to add a synchronization point in the list of subsolvers.
 class SynchronizationPoint : public SubSolver {
  public:
-  explicit SynchronizationPoint(const std::string& name,
-                                std::function<void()> f)
+  explicit SynchronizationPoint(absl::string_view name, std::function<void()> f)
       : SubSolver(name, HELPER), f_(std::move(f)) {}
   bool TaskIsAvailable() final { return false; }
   std::function<void()> GenerateTask(int64_t /*task_id*/) final {
@@ -128,8 +164,8 @@ class SynchronizationPoint : public SubSolver {
 // Note that it is okay to incorporate "special" subsolver that never produce
 // any tasks. This can be used to synchronize classes used by many subsolvers
 // just once for instance.
-void NonDeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers, int num_threads);
+void NonDeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                          int num_threads);
 
 // Similar to NonDeterministicLoop() except this should result in a
 // deterministic solver provided that all SubSolver respect the Synchronize()
@@ -141,15 +177,14 @@ void NonDeterministicLoop(
 //    which one to run.
 // 3/ wait for all task to finish.
 // 4/ repeat until no task can be generated in step 2.
-void DeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers, int num_threads,
-    int batch_size);
+void DeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                       int num_threads, int batch_size);
 
 // Same as above, but specialized implementation for the case num_threads=1.
 // This avoids using a Threadpool altogether. It should have the same behavior
 // than the functions above with num_threads=1 and batch_size=1. Note that an
 // higher batch size will not behave in the same way, even if num_threads=1.
-void SequentialLoop(const std::vector<std::unique_ptr<SubSolver>>& subsolvers);
+void SequentialLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers);
 
 }  // namespace sat
 }  // namespace operations_research

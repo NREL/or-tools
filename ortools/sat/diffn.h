@@ -19,31 +19,27 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/types/span.h"
-#include "ortools/base/integral_types.h"
-#include "ortools/base/logging.h"
-#include "ortools/base/macros.h"
 #include "ortools/sat/diffn_util.h"
 #include "ortools/sat/disjunctive.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/intervals.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/sat_base.h"
-#include "ortools/sat/util.h"
-#include "ortools/util/strong_integers.h"
+#include "ortools/sat/sat_parameters.pb.h"
 
 namespace operations_research {
 namespace sat {
 
-// Non overlapping rectangles.
+// Non overlapping rectangles. This includes box with zero-areas.
+// The following is forbidden:
+//   - a point box inside a box with a non zero area
+//   - a line box overlapping a box with a non zero area
+//   - one vertical line box crossing an horizontal line box.
 class NonOverlappingRectanglesDisjunctivePropagator
     : public PropagatorInterface {
  public:
-  // The strict parameters indicates how to place zero width or zero height
-  // boxes. If strict is true, these boxes must not 'cross' another box, and are
-  // pushed by the other boxes.
   // The slow_propagators select which disjunctive algorithms to propagate.
-  NonOverlappingRectanglesDisjunctivePropagator(bool strict,
-                                                SchedulingConstraintHelper* x,
+  NonOverlappingRectanglesDisjunctivePropagator(SchedulingConstraintHelper* x,
                                                 SchedulingConstraintHelper* y,
                                                 Model* model);
   ~NonOverlappingRectanglesDisjunctivePropagator() override;
@@ -52,7 +48,14 @@ class NonOverlappingRectanglesDisjunctivePropagator
   void Register(int fast_priority, int slow_priority);
 
  private:
-  bool PropagateTwoBoxes();
+  bool PropagateOnXWhenOnlyTwoBoxes();
+  // If two boxes must overlap but do not have a mandatory line/column that
+  // crosses both of them, then the code above do not see it. So we manually
+  // propagate this case.
+  // This also propagates boxes with null area against other boxes (with a non
+  // zero area, and with a zero area in the other dimension).
+  bool PropagateAllPairsOfBoxes();
+  bool PropagateTwoBoxes(int box1, int box2);
   bool FindBoxesThatMustOverlapAHorizontalLineAndPropagate(
       bool fast_propagation, const SchedulingConstraintHelper& x,
       SchedulingConstraintHelper* y);
@@ -60,17 +63,20 @@ class NonOverlappingRectanglesDisjunctivePropagator
   SchedulingConstraintHelper& global_x_;
   SchedulingConstraintHelper& global_y_;
   SchedulingConstraintHelper x_;
-  const bool strict_;
 
   GenericLiteralWatcher* watcher_;
   int fast_id_;  // Propagator id of the "fast" version.
 
-  std::vector<IndexedInterval> indexed_intervals_;
+  std::vector<IndexedInterval> indexed_boxes_;
   std::vector<std::vector<int>> events_overlapping_boxes_;
 
   absl::flat_hash_set<absl::Span<int>> reduced_overlapping_boxes_;
   std::vector<absl::Span<int>> boxes_to_propagate_;
   std::vector<absl::Span<int>> disjoint_boxes_;
+  std::vector<int> horizontal_zero_area_boxes_;
+  std::vector<int> vertical_zero_area_boxes_;
+  std::vector<int> point_zero_area_boxes_;
+  std::vector<int> non_zero_area_boxes_;
 
   DisjunctiveOverloadChecker overload_checker_;
   DisjunctiveDetectablePrecedences forward_detectable_precedences_;
@@ -79,6 +85,9 @@ class NonOverlappingRectanglesDisjunctivePropagator
   DisjunctiveNotLast backward_not_last_;
   DisjunctiveEdgeFinding forward_edge_finding_;
   DisjunctiveEdgeFinding backward_edge_finding_;
+
+  bool has_zero_area_boxes_ = false;
+  const bool pairwise_propagation_ = false;
 
   NonOverlappingRectanglesDisjunctivePropagator(
       const NonOverlappingRectanglesDisjunctivePropagator&) = delete;
@@ -93,22 +102,17 @@ void AddDiffnCumulativeRelationOnX(SchedulingConstraintHelper* x,
 
 // Enforces that the boxes with corners in (x, y), (x + dx, y), (x, y + dy)
 // and (x + dx, y + dy) do not overlap.
-// If strict is true, and if one box has a zero dimension, it still cannot
-// intersect another box.
 inline std::function<void(Model*)> NonOverlappingRectangles(
     const std::vector<IntervalVariable>& x,
-    const std::vector<IntervalVariable>& y, bool is_strict) {
+    const std::vector<IntervalVariable>& y) {
   return [=](Model* model) {
-    SchedulingConstraintHelper* x_helper =
-        new SchedulingConstraintHelper(x, model);
-    SchedulingConstraintHelper* y_helper =
-        new SchedulingConstraintHelper(y, model);
-    model->TakeOwnership(x_helper);
-    model->TakeOwnership(y_helper);
+    IntervalsRepository* repository = model->GetOrCreate<IntervalsRepository>();
+    SchedulingConstraintHelper* x_helper = repository->GetOrCreateHelper(x);
+    SchedulingConstraintHelper* y_helper = repository->GetOrCreateHelper(y);
 
     NonOverlappingRectanglesDisjunctivePropagator* constraint =
-        new NonOverlappingRectanglesDisjunctivePropagator(is_strict, x_helper,
-                                                          y_helper, model);
+        new NonOverlappingRectanglesDisjunctivePropagator(x_helper, y_helper,
+                                                          model);
     constraint->Register(/*fast_priority=*/3, /*slow_priority=*/4);
     model->TakeOwnership(constraint);
 

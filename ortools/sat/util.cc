@@ -16,30 +16,31 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "ortools/base/integral_types.h"
-#include "ortools/base/logging.h"
-#if !defined(__PORTABLE_PLATFORM__)
-#include "google/protobuf/descriptor.h"
-#endif  // __PORTABLE_PLATFORM__
 #include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/numeric/int128.h"
 #include "absl/random/bit_gen_ref.h"
 #include "absl/random/distributions.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "google/protobuf/descriptor.h"
+#include "ortools/base/logging.h"
 #include "ortools/base/mathutil.h"
 #include "ortools/base/stl_util.h"
 #include "ortools/sat/sat_base.h"
 #include "ortools/sat/sat_parameters.pb.h"
 #include "ortools/util/saturated_arithmetic.h"
+#include "ortools/util/sorted_interval_list.h"
 #include "ortools/util/strong_integers.h"
 
 namespace operations_research {
@@ -56,6 +57,45 @@ std::string FormatCounter(int64_t num) {
     out.push_back(s[i]);
   }
   return out;
+}
+
+namespace {
+
+inline std::string LeftAlign(std::string s, int size = 16) {
+  if (s.size() >= size) return s;
+  s.resize(size, ' ');
+  return s;
+}
+
+inline std::string RightAlign(std::string s, int size = 16) {
+  if (s.size() >= size) return s;
+  return absl::StrCat(std::string(size - s.size(), ' '), s);
+}
+
+}  // namespace
+
+std::string FormatTable(const std::vector<std::vector<std::string>>& table,
+                        int spacing) {
+  std::vector<int> widths;
+  for (const std::vector<std::string>& line : table) {
+    if (line.size() > widths.size()) widths.resize(line.size(), spacing);
+    for (int j = 0; j < line.size(); ++j) {
+      widths[j] = std::max<int>(widths[j], line[j].size() + spacing);
+    }
+  }
+  std::string output;
+  for (int i = 0; i < table.size(); ++i) {
+    for (int j = 0; j < table[i].size(); ++j) {
+      if (i == 0 && j == 0) {
+        // We currently only left align the table name.
+        absl::StrAppend(&output, LeftAlign(table[i][j], widths[j]));
+      } else {
+        absl::StrAppend(&output, RightAlign(table[i][j], widths[j]));
+      }
+    }
+    absl::StrAppend(&output, "\n");
+  }
+  return output;
 }
 
 void RandomizeDecisionHeuristic(absl::BitGenRef random,
@@ -493,7 +533,7 @@ void MaxBoundedSubsetSum::AddMultiples(int64_t coeff, int64_t max_value) {
 
 void MaxBoundedSubsetSum::AddChoicesInternal(absl::Span<const int64_t> values) {
   // Mode 1: vector of all possible sums (with duplicates).
-  if (!sums_.empty() && sums_.size() <= kMaxComplexityPerAdd) {
+  if (!sums_.empty() && sums_.size() <= max_complexity_per_add_) {
     const int old_size = sums_.size();
     for (int i = 0; i < old_size; ++i) {
       for (const int64_t value : values) {
@@ -509,7 +549,7 @@ void MaxBoundedSubsetSum::AddChoicesInternal(absl::Span<const int64_t> values) {
   }
 
   // Mode 2: bitset of all possible sums.
-  if (bound_ <= kMaxComplexityPerAdd) {
+  if (bound_ <= max_complexity_per_add_) {
     if (!sums_.empty()) {
       expanded_sums_.assign(bound_ + 1, false);
       for (const int64_t s : sums_) {
@@ -541,6 +581,33 @@ void MaxBoundedSubsetSum::AddChoicesInternal(absl::Span<const int64_t> values) {
   } else {
     current_max_ = FloorOfRatio(bound_, gcd_) * gcd_;
   }
+}
+
+int64_t MaxBoundedSubsetSum::MaxIfAdded(int64_t candidate) const {
+  if (candidate > bound_ || current_max_ == bound_) return current_max_;
+
+  int64_t current_max = current_max_;
+  // Mode 1: vector of all possible sums (with duplicates).
+  if (!sums_.empty()) {
+    for (const int64_t v : sums_) {
+      if (v + candidate > bound_) continue;
+      if (v + candidate > current_max) {
+        current_max = v + candidate;
+        if (current_max == bound_) return current_max;
+      }
+    }
+    return current_max;
+  }
+
+  // Mode 2: bitset of all possible sums.
+  if (!expanded_sums_.empty()) {
+    const int64_t min_useful = std::max<int64_t>(0, current_max_ - candidate);
+    const int64_t max_useful = bound_ - candidate;
+    for (int64_t v = max_useful; v >= min_useful; --v) {
+      if (expanded_sums_[v]) return v + candidate;
+    }
+  }
+  return current_max_;
 }
 
 BasicKnapsackSolver::Result BasicKnapsackSolver::Solve(
@@ -788,6 +855,128 @@ std::vector<std::vector<absl::InlinedVector<int64_t, 2>>> FullyCompressTuples(
   FullyCompressTuplesRecursive(domain_sizes, absl::MakeSpan(*tuples),
                                &reversed_suffix, &output);
   return output;
+}
+
+namespace {
+
+class CliqueDecomposition {
+ public:
+  CliqueDecomposition(const std::vector<std::vector<int>>& graph,
+                      absl::BitGenRef random, std::vector<int>* buffer)
+      : graph_(graph), random_(random), buffer_(buffer) {
+    const int n = graph.size();
+    permutation_.resize(n);
+    buffer_->resize(n);
+
+    // TODO(user): Start by sorting by decreasing size of adjacency list?
+    for (int i = 0; i < n; ++i) permutation_[i] = i;
+  }
+
+  // This works in O(m). All possible decomposition are reachable, depending on
+  // the initial permutation.
+  //
+  // TODO(user): It can be made faster within the same complexity though.
+  void DecomposeGreedily() {
+    decomposition_.clear();
+    candidates_.clear();
+
+    const int n = graph_.size();
+    taken_.assign(n, false);
+    temp_.assign(n, false);
+
+    int buffer_index = 0;
+    for (const int i : permutation_) {
+      if (taken_[i]) continue;
+
+      // Save start of amo and output i.
+      const int start = buffer_index;
+      taken_[i] = true;
+      (*buffer_)[buffer_index++] = i;
+
+      candidates_.clear();
+      for (const int c : graph_[i]) {
+        if (!taken_[c]) candidates_.push_back(c);
+      }
+      while (!candidates_.empty()) {
+        // Extend at most one with lowest possible permutation index.
+        int next = candidates_.front();
+        for (const int n : candidates_) {
+          if (permutation_[n] < permutation_[next]) next = n;
+        }
+
+        // Add to current amo.
+        taken_[next] = true;
+        (*buffer_)[buffer_index++] = next;
+
+        // Filter candidates.
+        // TODO(user): With a sorted graph_, same complexity, but likely faster.
+        for (const int head : graph_[next]) temp_[head] = true;
+        int new_size = 0;
+        for (const int c : candidates_) {
+          if (taken_[c]) continue;
+          if (!temp_[c]) continue;
+          candidates_[new_size++] = c;
+        }
+        candidates_.resize(new_size);
+        for (const int head : graph_[next]) temp_[head] = false;
+      }
+
+      // Output amo.
+      decomposition_.push_back(
+          absl::MakeSpan(buffer_->data() + start, buffer_index - start));
+    }
+    DCHECK_EQ(buffer_index, n);
+  }
+
+  // We follow the heuristic in the paper: "Partitioning Networks into Cliques:
+  // A Randomized Heuristic Approach", David Chaluppa, 2014.
+  //
+  // Note that by keeping the local order of each clique, we cannot make the
+  // order "worse". And each new call to DecomposeGreedily() can only reduce
+  // the number of clique in the cover.
+  void ChangeOrder() {
+    if (absl::Bernoulli(random_, 0.5)) {
+      std::reverse(decomposition_.begin(), decomposition_.end());
+    } else {
+      std::shuffle(decomposition_.begin(), decomposition_.end(), random_);
+    }
+
+    int out_index = 0;
+    for (const absl::Span<const int> clique : decomposition_) {
+      for (const int i : clique) {
+        permutation_[out_index++] = i;
+      }
+    }
+  }
+
+  const std::vector<absl::Span<int>>& decomposition() const {
+    return decomposition_;
+  }
+
+ private:
+  const std::vector<std::vector<int>>& graph_;
+  absl::BitGenRef random_;
+  std::vector<int>* buffer_;
+
+  std::vector<absl::Span<int>> decomposition_;
+  std::vector<int> candidates_;
+  std::vector<int> permutation_;
+  std::vector<bool> taken_;
+  std::vector<bool> temp_;
+};
+
+}  // namespace
+
+std::vector<absl::Span<int>> AtMostOneDecomposition(
+    const std::vector<std::vector<int>>& graph, absl::BitGenRef random,
+    std::vector<int>* buffer) {
+  CliqueDecomposition decomposer(graph, random, buffer);
+  for (int pass = 0; pass < 10; ++pass) {
+    decomposer.DecomposeGreedily();
+    if (decomposer.decomposition().size() == 1) break;
+    decomposer.ChangeOrder();
+  }
+  return decomposer.decomposition();
 }
 
 }  // namespace sat

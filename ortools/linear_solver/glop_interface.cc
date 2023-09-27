@@ -11,6 +11,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#if defined(USE_GLOP)
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -34,7 +36,7 @@ namespace {}  // Anonymous namespace
 
 class GLOPInterface : public MPSolverInterface {
  public:
-  explicit GLOPInterface(MPSolver* const solver);
+  explicit GLOPInterface(MPSolver* solver);
   ~GLOPInterface() override;
 
   // ----- Solve -----
@@ -47,13 +49,12 @@ class GLOPInterface : public MPSolverInterface {
   void SetVariableBounds(int index, double lb, double ub) override;
   void SetVariableInteger(int index, bool integer) override;
   void SetConstraintBounds(int index, double lb, double ub) override;
-  void AddRowConstraint(MPConstraint* const ct) override;
-  void AddVariable(MPVariable* const var) override;
-  void SetCoefficient(MPConstraint* const constraint,
-                      const MPVariable* const variable, double new_value,
-                      double old_value) override;
-  void ClearConstraint(MPConstraint* const constraint) override;
-  void SetObjectiveCoefficient(const MPVariable* const variable,
+  void AddRowConstraint(MPConstraint* ct) override;
+  void AddVariable(MPVariable* var) override;
+  void SetCoefficient(MPConstraint* constraint, const MPVariable* variable,
+                      double new_value, double old_value) override;
+  void ClearConstraint(MPConstraint* constraint) override;
+  void SetObjectiveCoefficient(const MPVariable* variable,
                                double coefficient) override;
   void SetObjectiveOffset(double value) override;
   void ClearObjective() override;
@@ -430,3 +431,4 @@ MPSolverInterface* BuildGLOPInterface(MPSolver* const solver) {
 }
 
 }  // namespace operations_research
+#endif  // #if defined(USE_GLOP)

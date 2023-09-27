@@ -5,17 +5,17 @@
 | MacOS    | [![Status][macos_svg]][macos_link] |
 | Windows  | [![Status][windows_svg]][windows_link] |
 
-[linux_svg]: https://github.com/google/or-tools/actions/workflows/bazel_linux.yml/badge.svg?branch=main
-[linux_link]: https://github.com/google/or-tools/actions/workflows/bazel_linux.yml
-[macos_svg]: https://github.com/google/or-tools/actions/workflows/bazel_macos.yml/badge.svg?branch=main
-[macos_link]: https://github.com/google/or-tools/actions/workflows/bazel_macos.yml
-[windows_svg]: https://github.com/google/or-tools/actions/workflows/bazel_windows.yml/badge.svg?branch=main
-[windows_link]: https://github.com/google/or-tools/actions/workflows/bazel_windows.yml
+[linux_svg]: ./../../../actions/workflows/amd64_linux_bazel.yml/badge.svg?branch=main
+[linux_link]: ./../../../actions/workflows/amd64_linux_bazel.yml
+[macos_svg]: ./../../../actions/workflows/amd64_macos_bazel.yml/badge.svg?branch=main
+[macos_link]: ./../../../actions/workflows/amd64_macos_bazel.yml
+[windows_svg]: ./../../../actions/workflows/amd64_windows_bazel.yml/badge.svg?branch=main
+[windows_link]: ./../../../actions/workflows/amd64_windows_bazel.yml
 
 Dockers [Alpine, Archlinux, Centos, Debian, Fedora, OpenSuse, Ubuntu]: [![Status][docker_svg]][docker_link]
 
-[docker_svg]: https://github.com/google/or-tools/actions/workflows/bazel_docker.yml/badge.svg?branch=main
-[docker_link]: https://github.com/google/or-tools/actions/workflows/bazel_docker.yml
+[docker_svg]: ./../../../actions/workflows/amd64_docker_bazel.yml/badge.svg?branch=main
+[docker_link]: ./../../../actions/workflows/amd64_docker_bazel.yml
 
 ## Introduction
 
@@ -36,9 +36,11 @@ you can download it for free from <https://bazel.build/>.
 please use the Makefile or CMake based build instead.**
 
 ## Requirement
+
 You'll need:
 
-* `Bazel >= 4.0`.
+* `Bazel >= 5.4.0`.
+* A compiler with C++17 support.
 
 ## Solvers supported
 
@@ -64,7 +66,7 @@ OR-Tools depends on several mandatory libraries.
 
 ## Compilation
 
-You must compile OR-Tools using C++20:
+You must compile OR-Tools using at least C++17 (C++20 on windows):
 
 *   on UNIX:
 

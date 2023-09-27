@@ -184,7 +184,7 @@ class SVector;
 // need bigger indices.
 //
 // Note: The type can be unsigned, except for the graphs with reverse arcs
-// where the ArcIndexType must be signed, but not necessarly the NodeIndexType.
+// where the ArcIndexType must be signed, but not necessarily the NodeIndexType.
 template <typename NodeIndexType = int32_t, typename ArcIndexType = int32_t,
           bool HasReverseArcs = false>
 class BaseGraph {
@@ -472,6 +472,8 @@ class StaticGraph : public BaseGraph<NodeIndexType, ArcIndexType, false> {
 template <typename NodeIndexType = int32_t, typename ArcIndexType = int32_t>
 class ReverseArcListGraph
     : public BaseGraph<NodeIndexType, ArcIndexType, true> {
+  static_assert(std::is_signed_v<ArcIndexType>, "ArcIndexType must be signed");
+
   typedef BaseGraph<NodeIndexType, ArcIndexType, true> Base;
   using Base::arc_capacity_;
   using Base::const_capacities_;
@@ -560,6 +562,8 @@ class ReverseArcListGraph
 template <typename NodeIndexType = int32_t, typename ArcIndexType = int32_t>
 class ReverseArcStaticGraph
     : public BaseGraph<NodeIndexType, ArcIndexType, true> {
+  static_assert(std::is_signed_v<ArcIndexType>, "ArcIndexType must be signed");
+
   typedef BaseGraph<NodeIndexType, ArcIndexType, true> Base;
   using Base::arc_capacity_;
   using Base::const_capacities_;
@@ -1362,7 +1366,7 @@ NodeIndexType StaticGraph<NodeIndexType, ArcIndexType>::Head(
 // This is because it is a lot more efficient cache-wise to do it this way.
 // This was determined by various experiments, but can also be understood:
 // - during repetitive call to AddArc() a client usually accesses various
-//   areas of memory, and there is no reason to polute the cache with
+//   areas of memory, and there is no reason to pollute the cache with
 //   possibly random access to degree[i].
 // - When the degrees are needed, we compute them in one go, maximizing the
 //   chance of cache hit during the computation.

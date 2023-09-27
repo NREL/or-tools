@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 #include <string>
 #include <utility>
@@ -25,8 +24,10 @@
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/meta/type_traits.h"
 #include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "ortools/base/logging.h"
 #include "ortools/port/proto_utils.h"
 #include "ortools/sat/cp_model.pb.h"
@@ -569,7 +570,7 @@ std::string ValidateIntervalConstraint(const CpModelProto& model,
   if (ct.enforcement_literal().empty() &&
       MinOfExpression(model, arg.size()) < 0) {
     return absl::StrCat(
-        "The size of an performed interval must be >= 0 in constraint: ",
+        "The size of a performed interval must be >= 0 in constraint: ",
         ProtobufDebugString(ct));
   }
   AppendToOverflowValidator(arg.size(), &for_overflow_validation);
@@ -894,8 +895,23 @@ bool PossibleIntegerOverflow(const CpModelProto& model,
 }
 
 std::string ValidateCpModel(const CpModelProto& model, bool after_presolve) {
+  int64_t int128_overflow = 0;
   for (int v = 0; v < model.variables_size(); ++v) {
     RETURN_IF_NOT_EMPTY(ValidateIntegerVariable(model, v));
+
+    const auto& domain = model.variables(v).domain();
+    const int64_t min = domain[0];
+    const int64_t max = domain[domain.size() - 1];
+    int128_overflow = CapAdd(
+        int128_overflow, std::max({std::abs(min), std::abs(max), max - min}));
+  }
+
+  // We require this precondition so that we can take any linear combination of
+  // variable with coefficient in int64_t and compute the activity on an int128
+  // with no overflow. This is useful during cut computation.
+  if (int128_overflow == std::numeric_limits<int64_t>::max()) {
+    return "The sum of all variable domains do not fit on an int64_t. This is "
+           "needed to prevent overflows.";
   }
 
   // We need to validate the intervals used first, so we add these constraints
@@ -1287,10 +1303,7 @@ class ConstraintChecker {
       for (int i = 0; i < num_intervals; ++i) {
         const ConstraintProto& x = model.constraints(arg.x_intervals(i));
         const ConstraintProto& y = model.constraints(arg.y_intervals(i));
-        if (ConstraintIsEnforced(x) && ConstraintIsEnforced(y) &&
-            (!arg.boxes_with_null_area_can_overlap() ||
-             (!IntervalIsEmpty(x.interval()) &&
-              !IntervalIsEmpty(y.interval())))) {
+        if (ConstraintIsEnforced(x) && ConstraintIsEnforced(y)) {
           enforced_intervals_xy.push_back({&x.interval(), &y.interval()});
         }
       }
@@ -1302,9 +1315,7 @@ class ConstraintChecker {
         const auto& yi = *enforced_intervals_xy[i].second;
         const auto& xj = *enforced_intervals_xy[j].first;
         const auto& yj = *enforced_intervals_xy[j].second;
-        if (!IntervalsAreDisjoint(xi, xj) && !IntervalsAreDisjoint(yi, yj) &&
-            !IntervalIsEmpty(xi) && !IntervalIsEmpty(xj) &&
-            !IntervalIsEmpty(yi) && !IntervalIsEmpty(yj)) {
+        if (!IntervalsAreDisjoint(xi, xj) && !IntervalsAreDisjoint(yi, yj)) {
           VLOG(1) << "Interval " << i << "(x=[" << IntervalStart(xi) << ", "
                   << IntervalEnd(xi) << "], y=[" << IntervalStart(yi) << ", "
                   << IntervalEnd(yi) << "]) and " << j << "(x=["

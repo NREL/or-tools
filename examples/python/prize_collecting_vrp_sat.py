@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Simple prize collecting VRP problem with a max distance."""
 
 from typing import Sequence
@@ -19,6 +20,7 @@ from ortools.sat.python import cp_model
 
 
 DISTANCE_MATRIX = [
+    # fmt:off
     [0, 10938, 4542, 2835, 29441, 2171, 1611, 9208, 9528, 11111, 16120, 22606, 22127, 20627, 21246, 23387, 16697, 33609, 26184, 24772, 22644, 20655, 30492, 23296, 32979, 18141, 19248, 17129, 17192, 15645, 12658, 11210, 12094, 13175, 18162, 4968, 12308, 10084, 13026, 15056],
     [10938, 0, 6422, 9742, 18988, 12974, 11216, 19715, 19004, 18271, 25070, 31971, 31632, 30571, 31578, 33841, 27315, 43964, 36944, 35689, 33569, 31481, 41360, 33760, 43631, 28730, 29976, 27803, 28076, 26408, 23504, 22025, 22000, 13197, 14936, 15146, 23246, 20956, 23963, 25994],
     [4542, 6422, 0, 3644, 25173, 6552, 5092, 13584, 13372, 13766, 19805, 26537, 26117, 24804, 25590, 27784, 21148, 37981, 30693, 29315, 27148, 25071, 34943, 27472, 37281, 22389, 23592, 21433, 21655, 20011, 17087, 15612, 15872, 11653, 15666, 8842, 16843, 14618, 17563, 19589],
@@ -59,7 +61,8 @@ DISTANCE_MATRIX = [
     [10084, 20956, 14618, 12135, 38935, 8306, 9793, 2615, 5850, 10467, 9918, 14568, 13907, 11803, 11750, 13657, 6901, 23862, 16125, 14748, 12981, 11624, 21033, 15358, 24144, 10304, 10742, 9094, 8042, 7408, 4580, 4072, 8446, 20543, 26181, 7668, 2747, 0, 3330, 5313],
     [13026, 23963, 17563, 14771, 42160, 11069, 12925, 5730, 8778, 13375, 11235, 14366, 13621, 11188, 10424, 11907, 5609, 21861, 13624, 11781, 9718, 8304, 17737, 12200, 20816, 7330, 7532, 6117, 4735, 4488, 2599, 3355, 7773, 22186, 27895, 9742, 726, 3330, 0, 2042],
     [15056, 25994, 19589, 16743, 44198, 13078, 14967, 7552, 10422, 14935, 11891, 14002, 13225, 10671, 9475, 10633, 5084, 20315, 11866, 9802, 7682, 6471, 15720, 10674, 18908, 6204, 6000, 5066, 3039, 3721, 3496, 4772, 8614, 23805, 29519, 11614, 2749, 5313, 2042, 0],
-]  # yapf: disable
+    # fmt:on
+]
 
 MAX_DISTANCE = 80_000
 
@@ -71,29 +74,28 @@ VISIT_VALUES[0] = 0
 def print_solution(solver, visited_nodes, used_arcs, num_nodes, num_vehicles):
     """Prints solution on console."""
     # Display dropped nodes.
-    dropped_nodes = 'Dropped nodes:'
+    dropped_nodes = "Dropped nodes:"
     for node in range(num_nodes):
         if node == 0:
             continue
-        is_visited = sum([
-            solver.BooleanValue(visited_nodes[v][node])
-            for v in range(num_vehicles)
-        ])
+        is_visited = sum(
+            [solver.BooleanValue(visited_nodes[v][node]) for v in range(num_vehicles)]
+        )
         if not is_visited:
-            dropped_nodes += f' {node}({VISIT_VALUES[node]})'
+            dropped_nodes += f" {node}({VISIT_VALUES[node]})"
     print(dropped_nodes)
     # Display routes
     total_distance = 0
     total_value_collected = 0
     for v in range(num_vehicles):
         current_node = 0
-        plan_output = f'Route for vehicle {v}:\n'
+        plan_output = f"Route for vehicle {v}:\n"
         route_distance = 0
         value_collected = 0
         route_is_finished = False
         while not route_is_finished:
             value_collected += VISIT_VALUES[current_node]
-            plan_output += f' {current_node} ->'
+            plan_output += f" {current_node} ->"
             # find next node
             for node in range(num_nodes):
                 if node == current_node:
@@ -104,21 +106,21 @@ def print_solution(solver, visited_nodes, used_arcs, num_nodes, num_vehicles):
                     if current_node == 0:
                         route_is_finished = True
                     break
-        plan_output += f' {current_node}\n'
-        plan_output += f'Distance of the route: {route_distance}m\n'
-        plan_output += f'Value collected: {value_collected}\n'
+        plan_output += f" {current_node}\n"
+        plan_output += f"Distance of the route: {route_distance}m\n"
+        plan_output += f"Value collected: {value_collected}\n"
         print(plan_output)
         total_distance += route_distance
         total_value_collected += value_collected
-    print(f'Total Distance: {total_distance}m')
-    print(f'Total Value collected: {total_value_collected}/{sum(VISIT_VALUES)}')
+    print(f"Total Distance: {total_distance}m")
+    print(f"Total Value collected: {total_value_collected}/{sum(VISIT_VALUES)}")
 
 
 def prize_collecting_vrp():
     """Entry point of the program."""
     num_nodes = len(DISTANCE_MATRIX)
     num_vehicles = 4
-    print(f'Num nodes = {num_nodes}')
+    print(f"Num nodes = {num_nodes}")
 
     # Model.
     model = cp_model.CpModel()
@@ -135,8 +137,8 @@ def prize_collecting_vrp():
         used_arcs[v] = {}
         arcs = []
         for i in all_nodes:
-            is_visited = model.NewBoolVar(f'{i} is visited')
-            arcs.append([i, i, is_visited.Not()])
+            is_visited = model.NewBoolVar(f"{i} is visited")
+            arcs.append((i, i, is_visited.Not()))
 
             obj_vars.append(is_visited)
             obj_coeffs.append(VISIT_VALUES[i])
@@ -146,8 +148,8 @@ def prize_collecting_vrp():
                 if i == j:
                     used_arcs[v][i, j] = is_visited.Not()
                     continue
-                arc_is_used = model.NewBoolVar(f'{j} follows {i}')
-                arcs.append([i, j, arc_is_used])
+                arc_is_used = model.NewBoolVar(f"{j} follows {i}")
+                arcs.append((i, j, arc_is_used))
 
                 obj_vars.append(arc_is_used)
                 obj_coeffs.append(-DISTANCE_MATRIX[i][j])
@@ -160,18 +162,20 @@ def prize_collecting_vrp():
 
         # limit the route distance
         model.Add(
-            sum(used_arcs[v][i, j] * DISTANCE_MATRIX[i][j]
+            sum(
+                used_arcs[v][i, j] * DISTANCE_MATRIX[i][j]
                 for i in all_nodes
-                for j in all_nodes) <= MAX_DISTANCE)
+                for j in all_nodes
+            )
+            <= MAX_DISTANCE
+        )
 
     # Each node is visited at most once
     for node in range(1, num_nodes):
-        model.AddAtMostOne(
-            [visited_nodes[v][node] for v in range(num_vehicles)])
+        model.AddAtMostOne([visited_nodes[v][node] for v in range(num_vehicles)])
 
     # Maximize visited node values minus the travelled distance.
-    model.Maximize(
-        sum(obj_vars[i] * obj_coeffs[i] for i in range(len(obj_vars))))
+    model.Maximize(sum(obj_vars[i] * obj_coeffs[i] for i in range(len(obj_vars))))
 
     # Solve and print out the solution.
     solver = cp_model.CpSolver()
@@ -181,15 +185,14 @@ def prize_collecting_vrp():
 
     status = solver.Solve(model)
     if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-        print_solution(solver, visited_nodes, used_arcs, num_nodes,
-                       num_vehicles)
+        print_solution(solver, visited_nodes, used_arcs, num_nodes, num_vehicles)
 
 
 def main(argv: Sequence[str]) -> None:
     if len(argv) > 1:
-        raise app.UsageError('Too many command-line arguments.')
+        raise app.UsageError("Too many command-line arguments.")
     prize_collecting_vrp()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(main)

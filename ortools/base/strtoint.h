@@ -46,7 +46,7 @@
 
 #include "absl/base/port.h"  // disable some warnings on Windows
 #include "absl/strings/string_view.h"
-#include "ortools/base/integral_types.h"
+#include "ortools/base/types.h"
 
 namespace operations_research {
 
@@ -54,8 +54,8 @@ int32_t strtoint32(absl::string_view word);
 int64_t strtoint64(absl::string_view word);
 
 // Convenience versions of the above that take a string argument.
-inline int32_t atoi32(const std::string& word) { return strtoint32(word); }
-inline int64_t atoi64(const std::string& word) { return strtoint64(word); }
+inline int32_t atoi32(absl::string_view word) { return strtoint32(word); }
+inline int64_t atoi64(absl::string_view word) { return strtoint64(word); }
 
 }  // namespace operations_research
 

@@ -34,8 +34,7 @@ class OneVarLns : public BaseLns {
   void InitFragments() override { index_ = 0; }
 
   bool NextFragment() override {
-    const int size = Size();
-    if (index_ < size) {
+    if (index_ < Size()) {
       AppendToFragment(index_);
       ++index_;
       return true;
@@ -200,7 +199,7 @@ void SolveProblem(SolveType solve_type) {
 
 int main(int argc, char** argv) {
   InitGoogle(argv[0], &argc, &argv, true);
-  absl::SetFlag(&FLAGS_logtostderr, true);
+  absl::SetFlag(&FLAGS_stderrthreshold, 0);
   operations_research::SolveProblem(operations_research::LNS);
   operations_research::SolveProblem(operations_research::LS);
   operations_research::SolveProblem(operations_research::LS_WITH_FILTER);

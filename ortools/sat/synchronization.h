@@ -14,6 +14,7 @@
 #ifndef OR_TOOLS_SAT_SYNCHRONIZATION_H_
 #define OR_TOOLS_SAT_SYNCHRONIZATION_H_
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -30,18 +31,18 @@
 #include "absl/random/random.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
-#include "ortools/base/integral_types.h"
+#include "absl/types/span.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/stl_util.h"
 #include "ortools/base/timer.h"
 #include "ortools/sat/cp_model.pb.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/model.h"
-#include "ortools/sat/sat_base.h"
 #include "ortools/sat/sat_parameters.pb.h"
 #include "ortools/sat/util.h"
 #include "ortools/util/bitset.h"
 #include "ortools/util/logging.h"
+#include "ortools/util/sorted_interval_list.h"
 
 namespace operations_research {
 namespace sat {
@@ -53,8 +54,9 @@ namespace sat {
 template <typename ValueType>
 class SharedSolutionRepository {
  public:
-  explicit SharedSolutionRepository(int num_solutions_to_keep)
-      : num_solutions_to_keep_(num_solutions_to_keep) {}
+  explicit SharedSolutionRepository(int num_solutions_to_keep,
+                                    absl::string_view name = "")
+      : name_(name), num_solutions_to_keep_(num_solutions_to_keep) {}
 
   // The solution format used by this class.
   struct Solution {
@@ -116,13 +118,25 @@ class SharedSolutionRepository {
   // Works in O(num_solutions_to_keep_).
   void Synchronize();
 
+  std::vector<std::string> TableLineStats() const {
+    absl::MutexLock mutex_lock(&mutex_);
+    return {FormatName(name_), FormatCounter(num_added_),
+            FormatCounter(num_queried_), FormatCounter(num_ignored_),
+            FormatCounter(num_synchronization_)};
+  }
+
  protected:
   // Helper method for adding the solutions once the mutex is acquired.
   void AddInternal(const Solution& solution)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
+  const std::string name_;
   const int num_solutions_to_keep_;
+
   mutable absl::Mutex mutex_;
+  int64_t num_added_ ABSL_GUARDED_BY(mutex_) = 0;
+  int64_t num_ignored_ ABSL_GUARDED_BY(mutex_) = 0;
+  mutable int64_t num_queried_ ABSL_GUARDED_BY(mutex_) = 0;
   int64_t num_synchronization_ ABSL_GUARDED_BY(mutex_) = 0;
 
   // Our two solutions pools, the current one and the new one that will be
@@ -132,22 +146,11 @@ class SharedSolutionRepository {
   std::vector<Solution> new_solutions_ ABSL_GUARDED_BY(mutex_);
 };
 
-// This is currently only used to store feasible solution from our 'relaxation'
-// LNS generators which in turn are used to generate some RINS neighborhood.
-class SharedRelaxationSolutionRepository
-    : public SharedSolutionRepository<int64_t> {
- public:
-  explicit SharedRelaxationSolutionRepository(int num_solutions_to_keep)
-      : SharedSolutionRepository<int64_t>(num_solutions_to_keep) {}
-
-  void NewRelaxationSolution(absl::Span<const int64_t> solution_values,
-                             IntegerValue inner_objective_value);
-};
-
 class SharedLPSolutionRepository : public SharedSolutionRepository<double> {
  public:
   explicit SharedLPSolutionRepository(int num_solutions_to_keep)
-      : SharedSolutionRepository<double>(num_solutions_to_keep) {}
+      : SharedSolutionRepository<double>(num_solutions_to_keep,
+                                         "lp solutions") {}
 
   void NewLPSolution(std::vector<double> lp_solution);
 };
@@ -162,15 +165,26 @@ class SharedLPSolutionRepository : public SharedSolutionRepository<double> {
 // complete feasible solutions.
 class SharedIncompleteSolutionManager {
  public:
-  bool HasNewSolution() const;
-  std::vector<double> GetNewSolution();
+  // This adds a new solution to the stack.
+  // Note that we keep the last 100 ones at most.
+  void AddSolution(const std::vector<double>& lp_solution);
 
-  void AddNewSolution(const std::vector<double>& lp_solution);
+  bool HasSolution() const;
+
+  // If there are no solution, this return an empty vector.
+  std::vector<double> PopLast();
+
+  std::vector<std::string> TableLineStats() const {
+    absl::MutexLock mutex_lock(&mutex_);
+    return {FormatName("pump"), FormatCounter(num_added_),
+            FormatCounter(num_queried_)};
+  }
 
  private:
-  // New solutions are added and removed from the back.
-  std::vector<std::vector<double>> solutions_;
   mutable absl::Mutex mutex_;
+  std::deque<std::vector<double>> solutions_ ABSL_GUARDED_BY(mutex_);
+  int64_t num_added_ ABSL_GUARDED_BY(mutex_) = 0;
+  mutable int64_t num_queried_ ABSL_GUARDED_BY(mutex_) = 0;
 };
 
 // Used by FillSolveStatsInResponse() to extract statistic to put in a
@@ -357,7 +371,8 @@ class SharedResponseManager {
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   void UpdateGapIntegralInternal() ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  void RegisterSolutionFound(const std::string& improvement_info)
+  void RegisterSolutionFound(const std::string& improvement_info,
+                             int solution_rank)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   void RegisterObjectiveBoundImprovement(const std::string& improvement_info)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
@@ -422,6 +437,11 @@ class SharedResponseManager {
   // Used for statistics of the improvements found by workers.
   absl::btree_map<std::string, int> primal_improvements_count_
       ABSL_GUARDED_BY(mutex_);
+  absl::btree_map<std::string, int> primal_improvements_min_rank_
+      ABSL_GUARDED_BY(mutex_);
+  absl::btree_map<std::string, int> primal_improvements_max_rank_
+      ABSL_GUARDED_BY(mutex_);
+
   absl::btree_map<std::string, int> dual_improvements_count_
       ABSL_GUARDED_BY(mutex_);
 
@@ -467,6 +487,10 @@ class SharedBoundsManager {
   void GetChangedBounds(int id, std::vector<int>* variables,
                         std::vector<int64_t>* new_lower_bounds,
                         std::vector<int64_t>* new_upper_bounds);
+
+  // This should not be called too often as it lock the class for
+  // O(num_variables) time.
+  void UpdateDomains(std::vector<Domain>* domains);
 
   // Publishes any new bounds so that GetChangedBounds() will reflect the latest
   // state.
@@ -575,6 +599,7 @@ template <typename ValueType>
 typename SharedSolutionRepository<ValueType>::Solution
 SharedSolutionRepository<ValueType>::GetSolution(int i) const {
   absl::MutexLock mutex_lock(&mutex_);
+  ++num_queried_;
   return solutions_[i];
 }
 
@@ -591,6 +616,7 @@ typename SharedSolutionRepository<ValueType>::Solution
 SharedSolutionRepository<ValueType>::GetRandomBiasedSolution(
     absl::BitGenRef random) const {
   absl::MutexLock mutex_lock(&mutex_);
+  ++num_queried_;
   const int64_t best_rank = solutions_[0].rank;
 
   // As long as we have solution with the best objective that haven't been
@@ -641,9 +667,13 @@ void SharedSolutionRepository<ValueType>::AddInternal(
     }
   }
   if (new_solutions_.size() < num_solutions_to_keep_) {
+    ++num_added_;
     new_solutions_.push_back(solution);
   } else if (solution < new_solutions_[worse_solution_index]) {
+    ++num_added_;
     new_solutions_[worse_solution_index] = solution;
+  } else {
+    ++num_ignored_;
   }
 }
 

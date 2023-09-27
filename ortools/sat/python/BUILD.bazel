@@ -13,7 +13,7 @@
 
 # Python wrapper for cp_model.
 
-load("@ortools_deps//:requirements.bzl", "requirement")
+load("@pip_deps//:requirements.bzl", "requirement")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_library")
 
@@ -23,8 +23,10 @@ pybind_extension(
     visibility = ["//visibility:public"],
     deps = [
         "//ortools/sat:cp_model_cc_proto",
+        "//ortools/sat:sat_parameters_cc_proto",
         "//ortools/sat:swig_helper",
         "@com_google_absl//absl/strings",
+        "@pybind11_protobuf//pybind11_protobuf:native_proto_caster",
     ],
 )
 
@@ -47,6 +49,7 @@ py_library(
     deps = [
         ":swig_helper",
         requirement("numpy"),
+        "@com_google_protobuf//:protobuf_python",
     ],
 )
 
@@ -66,6 +69,8 @@ py_library(
     deps = [
         ":cp_model_helper",
         ":swig_helper",
+        requirement("numpy"),
+        requirement("pandas"),
         "//ortools/sat:cp_model_py_pb2",
         "//ortools/sat:sat_parameters_py_pb2",
         "//ortools/util/python:sorted_interval_list",

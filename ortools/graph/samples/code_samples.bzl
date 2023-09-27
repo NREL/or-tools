@@ -13,7 +13,7 @@
 
 """Helper macro to compile and test code samples."""
 
-load("@ortools_deps//:requirements.bzl", "requirement")
+load("@pip_deps//:requirements.bzl", "requirement")
 
 def code_sample_cc(name):
     native.cc_binary(
@@ -26,7 +26,6 @@ def code_sample_cc(name):
             "//ortools/graph:linear_assignment",
             "//ortools/graph:max_flow",
             "//ortools/graph:min_cost_flow",
-            "//ortools/graph:shortestpaths",
         ],
     )
 
@@ -42,7 +41,6 @@ def code_sample_cc(name):
             "//ortools/graph:linear_assignment",
             "//ortools/graph:max_flow",
             "//ortools/graph:min_cost_flow",
-            "//ortools/graph:shortestpaths",
         ],
     )
 

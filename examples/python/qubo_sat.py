@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Solves a Qubo program using the CP-SAT solver."""
 
 from typing import Sequence
@@ -18,6 +19,7 @@ from absl import app
 from ortools.sat.python import cp_model
 
 RAW_DATA = [
+    # fmt:off
     [
         0, 0, 49.774821, -59.5968886, -46.0773896, 0, -65.166109, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 47.0957778, 15.259961, -98.7983264, 0, 0, 0, -20.7757184,
@@ -646,6 +648,7 @@ RAW_DATA = [
         0, 84.8495464, 0, 0, 0, 0, 0, 0, 33.0825986, 46.995148, 0, 0, 0,
         -4.243203, 0, 0, -24.0124188
     ]
+    # fmt:on
 ]
 
 
@@ -657,7 +660,7 @@ def solve_qubo():
 
     num_vars = len(RAW_DATA)
     all_vars = range(num_vars)
-    variables = [model.NewBoolVar('x_%i' % i) for i in all_vars]
+    variables = [model.NewBoolVar("x_%i" % i) for i in all_vars]
 
     obj_vars = []
     obj_coeffs = []
@@ -669,7 +672,7 @@ def solve_qubo():
             if coeff == 0.0:
                 continue
             x_j = variables[j]
-            var = model.NewBoolVar('')
+            var = model.NewBoolVar("")
             model.AddBoolOr([x_i.Not(), x_j.Not(), var])
             model.AddImplication(var, x_i)
             model.AddImplication(var, x_j)
@@ -682,8 +685,7 @@ def solve_qubo():
             obj_vars.append(variables[i])
             obj_coeffs.append(self_coeff)
 
-    model.Minimize(
-        sum(obj_vars[i] * obj_coeffs[i] for i in range(len(obj_vars))))
+    model.Minimize(sum(obj_vars[i] * obj_coeffs[i] for i in range(len(obj_vars))))
 
     ### Solve model.
     solver = cp_model.CpSolver()
@@ -695,9 +697,9 @@ def solve_qubo():
 
 def main(argv: Sequence[str]) -> None:
     if len(argv) > 1:
-        raise app.UsageError('Too many command-line arguments.')
+        raise app.UsageError("Too many command-line arguments.")
     solve_qubo()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(main)

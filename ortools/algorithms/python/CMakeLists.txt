@@ -11,39 +11,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set_property(SOURCE knapsack_solver.i PROPERTY CPLUSPLUS ON)
-set_property(SOURCE knapsack_solver.i PROPERTY SWIG_MODULE_NAME pywrapknapsack_solver)
-set_property(SOURCE knapsack_solver.i PROPERTY COMPILE_DEFINITIONS ${OR_TOOLS_COMPILE_DEFINITIONS} ABSL_MUST_USE_RESULT=)
-swig_add_library(pywrapknapsack_solver
-  TYPE MODULE
-  LANGUAGE python
-  OUTPUT_DIR  ${PYTHON_PROJECT_DIR}/algorithms
-  SOURCES knapsack_solver.i)
-
-target_include_directories(pywrapknapsack_solver PRIVATE ${Python3_INCLUDE_DIRS})
-set_property(TARGET pywrapknapsack_solver PROPERTY SWIG_USE_TARGET_INCLUDE_DIRECTORIES ON)
-target_compile_definitions(pywrapknapsack_solver PUBLIC "PY3")
+pybind11_add_module(knapsack_solver_pybind11 MODULE knapsack_solver.cc)
+set_target_properties(knapsack_solver_pybind11 PROPERTIES
+  LIBRARY_OUTPUT_NAME "knapsack_solver")
 
 # note: macOS is APPLE and also UNIX !
 if(APPLE)
-  set_target_properties(pywrapknapsack_solver PROPERTIES
+  set_target_properties(knapsack_solver_pybind11 PROPERTIES
     SUFFIX ".so"
-    INSTALL_RPATH "@loader_path;@loader_path/../../${PROJECT_NAME}/.libs")
-  set_property(TARGET pywrapknapsack_solver APPEND PROPERTY
-    LINK_FLAGS "-flat_namespace -undefined suppress")
+    INSTALL_RPATH "@loader_path;@loader_path/../../../${PYTHON_PROJECT}/.libs"
+    )
+  set_property(TARGET knapsack_solver_pybind11 APPEND PROPERTY
+    LINK_FLAGS "-flat_namespace -undefined suppress"
+    )
 elseif(UNIX)
-  set_target_properties(pywrapknapsack_solver PROPERTIES
-    INSTALL_RPATH "$ORIGIN:$ORIGIN/../../${PROJECT_NAME}/.libs")
+  set_target_properties(knapsack_solver_pybind11 PROPERTIES
+    INSTALL_RPATH "$ORIGIN:$ORIGIN/../../../${PYTHON_PROJECT}/.libs"
+    )
 endif()
-target_link_libraries(pywrapknapsack_solver PRIVATE ortools::ortools)
 
-# Variable PYTHON_LIBRARIES can contains keyword `optimized`
-# which won't be interpreted inside a generator expression.
-# i.e. we can't use: $<$<PLATFORM_ID:Windows>:${PYTHON_LIBRARIES}>
-# see: https://cmake.org/cmake/help/git-stage/command/target_link_libraries.html#command:target_link_libraries
-if(MSVC)
-  target_link_libraries(pywrapknapsack_solver PRIVATE ${Python3_LIBRARIES})
-endif()
+target_link_libraries(knapsack_solver_pybind11 PRIVATE ${PROJECT_NAMESPACE}::ortools)
+add_library(${PROJECT_NAMESPACE}::knapsack_solver_pybind11 ALIAS knapsack_solver_pybind11)
 
 if(BUILD_TESTING)
   file(GLOB PYTHON_SRCS "*_test.py")

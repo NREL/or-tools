@@ -16,15 +16,12 @@
 
 #include <stdint.h>
 
-#include <atomic>
 #include <memory>
-#include <string>
-#include <utility>
-#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "ortools/glop/lp_solver.h"
 #include "ortools/glop/parameters.pb.h"
@@ -34,6 +31,7 @@
 #include "ortools/math_opt/core/inverted_bounds.h"
 #include "ortools/math_opt/core/solve_interrupter.h"
 #include "ortools/math_opt/core/solver_interface.h"
+#include "ortools/math_opt/infeasible_subsystem.pb.h"
 #include "ortools/math_opt/model.pb.h"
 #include "ortools/math_opt/model_parameters.pb.h"
 #include "ortools/math_opt/model_update.pb.h"
@@ -57,12 +55,15 @@ class GlopSolver : public SolverInterface {
       const CallbackRegistrationProto& callback_registration, Callback cb,
       SolveInterrupter* interrupter) override;
   absl::StatusOr<bool> Update(const ModelUpdateProto& model_update) override;
+  absl::StatusOr<InfeasibleSubsystemResultProto> InfeasibleSubsystem(
+      const SolveParametersProto& parameters, MessageCallback message_cb,
+      SolveInterrupter* interrupter) override;
 
   // Returns the merged parameters and a list of warnings from any parameter
   // settings that are invalid for this solver.
   static absl::StatusOr<glop::GlopParameters> MergeSolveParameters(
-      const SolveParametersProto& solver_parameters, bool setting_initial_basis,
-      bool has_message_callback);
+      const SolveParametersProto& solve_parameters, bool setting_initial_basis,
+      bool has_message_callback, bool is_maximization);
 
  private:
   GlopSolver();
@@ -93,7 +94,7 @@ class GlopSolver : public SolverInterface {
       const ModelSolveParametersProto& model_parameters,
       const SolveInterrupter* interrupter, absl::Duration solve_time);
 
-  absl::Status FillSolveStats(const glop::ProblemStatus status,
+  absl::Status FillSolveStats(glop::ProblemStatus status,
                               absl::Duration solve_time,
                               SolveStatsProto& solve_stats);
 

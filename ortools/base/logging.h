@@ -20,13 +20,13 @@
 
 #include "absl/base/log_severity.h"
 #include "absl/flags/declare.h"
+#include "absl/log/check.h"
 #include "absl/log/die_if_null.h"
 #include "absl/log/log.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "google/protobuf/message.h"
 #include "ortools/base/macros.h"
 #include "ortools/base/vlog.h"
 
@@ -50,17 +50,6 @@ enum LogSeverity {
   GLOG_ERROR = static_cast<int>(absl::LogSeverity::kError),
   GLOG_FATAL = static_cast<int>(absl::LogSeverity::kFatal),
 };
-}  // namespace google
-
-// Implementation of the `AbslStringify` interface. This adds `DebugString()`
-// to the sink. Do not rely on exact format.
-namespace google {
-namespace protobuf {
-template <typename Sink>
-void AbslStringify(Sink& sink, const Message& msg) {
-  sink.Append(msg.DebugString());
-}
-}  // namespace protobuf
 }  // namespace google
 
 #endif  // OR_TOOLS_BASE_LOGGING_H_

@@ -14,26 +14,30 @@
 #ifndef OR_TOOLS_SAT_UTIL_H_
 #define OR_TOOLS_SAT_UTIL_H_
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "ortools/base/logging.h"
-#if !defined(__PORTABLE_PLATFORM__)
-#include "google/protobuf/descriptor.h"
-#endif  // __PORTABLE_PLATFORM__
 #include "absl/container/btree_set.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/log/log_streamer.h"
+#include "absl/numeric/int128.h"
 #include "absl/random/bit_gen_ref.h"
 #include "absl/random/random.h"
 #include "absl/types/span.h"
+#include "ortools/base/logging.h"
 #include "ortools/sat/model.h"
 #include "ortools/sat/sat_base.h"
 #include "ortools/sat/sat_parameters.pb.h"
 #include "ortools/util/random_engine.h"
+#include "ortools/util/saturated_arithmetic.h"
 #include "ortools/util/sorted_interval_list.h"
 #include "ortools/util/time_limit.h"
 
@@ -42,6 +46,17 @@ namespace sat {
 
 // Prints a positive number with separators for easier reading (ex: 1'348'065).
 std::string FormatCounter(int64_t num);
+
+// This is used to format our table first row entry.
+inline std::string FormatName(absl::string_view name) {
+  return absl::StrCat("'", name, "':");
+}
+
+// Display tabular data by auto-computing cell width. Note that we right align
+// everything but the first row/col that is assumed to be the table name and is
+// left aligned.
+std::string FormatTable(const std::vector<std::vector<std::string>>& table,
+                        int spacing = 2);
 
 // Returns a in [0, m) such that a * x = 1 modulo m.
 // If gcd(x, m) != 1, there is no inverse, and it returns 0.
@@ -104,6 +119,17 @@ int64_t SafeDoubleToInt64(double value);
 // -ClosestMultiple(-x) which is important for how this is used.
 int64_t ClosestMultiple(int64_t value, int64_t base);
 
+// Assuming n "literal" in [0, n), and a graph such that graph[i] list the
+// literal in [0, n) implied to false when the literal with index i is true,
+// this returns an heuristic decomposition of the literals into disjoint at most
+// ones.
+//
+// Note(user): Symmetrize the matrix if not already, maybe rephrase in term
+// of undirected graph, and clique decomposition.
+std::vector<absl::Span<int>> AtMostOneDecomposition(
+    const std::vector<std::vector<int>>& graph, absl::BitGenRef random,
+    std::vector<int>* buffer);
+
 // Given a linear equation "sum coeff_i * X_i <= rhs. We can rewrite it using
 // ClosestMultiple() as "base * new_terms + error <= rhs" where error can be
 // bounded using the provided bounds on each variables. This will return true if
@@ -133,15 +159,16 @@ class ModelRandomGenerator : public absl::BitGenRef {
   // case since the SatParameters is set first before the solver is created. We
   // also never really need to change the seed afterwards, it is just used to
   // diversify solves with identical parameters on different Model objects.
-  explicit ModelRandomGenerator(Model* model)
+  explicit ModelRandomGenerator(const SatParameters& params)
       : absl::BitGenRef(deterministic_random_) {
-    const auto& params = *model->GetOrCreate<SatParameters>();
     deterministic_random_.seed(params.random_seed());
     if (params.use_absl_random()) {
       absl_random_ = absl::BitGen(absl::SeedSeq({params.random_seed()}));
       absl::BitGenRef::operator=(absl::BitGenRef(absl_random_));
     }
   }
+  explicit ModelRandomGenerator(Model* model)
+      : ModelRandomGenerator(*model->GetOrCreate<SatParameters>()) {}
 
   // This is just used to display ABSL_RANDOM_SALT_OVERRIDE in the log so that
   // it is possible to reproduce a failure more easily while looking at a solver
@@ -197,12 +224,18 @@ int MoveOneUnprocessedLiteralLast(
 // Precondition: Both bound and all added values must be >= 0.
 class MaxBoundedSubsetSum {
  public:
-  MaxBoundedSubsetSum() { Reset(0); }
-  explicit MaxBoundedSubsetSum(int64_t bound) { Reset(bound); }
+  MaxBoundedSubsetSum() : max_complexity_per_add_(/*default=*/50) { Reset(0); }
+  explicit MaxBoundedSubsetSum(int64_t bound, int max_complexity_per_add = 50)
+      : max_complexity_per_add_(max_complexity_per_add) {
+    Reset(bound);
+  }
 
   // Resets to an empty set of values.
   // We look for the maximum sum <= bound.
   void Reset(int64_t bound);
+
+  // Returns the updated max if value was added to the subset-sum.
+  int64_t MaxIfAdded(int64_t candidate) const;
 
   // Add a value to the base set for which subset sums will be taken.
   void Add(int64_t value);
@@ -225,14 +258,73 @@ class MaxBoundedSubsetSum {
   // This assumes filtered values.
   void AddChoicesInternal(absl::Span<const int64_t> values);
 
-  static constexpr int kMaxComplexityPerAdd = 50;
-
+  // Max_complexity we are willing to pay on each Add() call.
+  const int max_complexity_per_add_;
   int64_t gcd_;
   int64_t bound_;
   int64_t current_max_;
   std::vector<int64_t> sums_;
   std::vector<bool> expanded_sums_;
   std::vector<int64_t> filtered_values_;
+};
+
+// Simple DP to keep the set of the first n reachable value (n > 1).
+//
+// TODO(user): Maybe modulo some prime number we can keep more info.
+// TODO(user): Another common case is a bunch of really small values and larger
+// ones, so we could bound the sum of the small values and keep the first few
+// reachable by the big ones. This is similar to some presolve transformations.
+template <int n>
+class FirstFewValues {
+ public:
+  FirstFewValues() { Reset(); }
+
+  void Reset() {
+    reachable_.fill(std::numeric_limits<int64_t>::max());
+    reachable_[0] = 0;
+    new_reachable_[0] = 0;
+  }
+
+  // We assume the given positive value can be added as many time as wanted.
+  //
+  // TODO(user): Implement Add() with an upper bound on the multiplicity.
+  void Add(const int64_t positive_value) {
+    DCHECK_GT(positive_value, 0);
+    if (positive_value >= reachable_.back()) return;
+
+    // We copy from reachable_[i] to new_reachable_[j].
+    // The position zero is already copied.
+    int i = 1;
+    int j = 1;
+    for (int base = 0; j < n && base < n; ++base) {
+      const int64_t candidate = CapAdd(new_reachable_[base], positive_value);
+      while (j < n && i < n && reachable_[i] < candidate) {
+        new_reachable_[j++] = reachable_[i++];
+      }
+      if (j < n) {
+        // Eliminate duplicates.
+        while (i < n && reachable_[i] == candidate) i++;
+
+        // insert candidate in its final place.
+        new_reachable_[j++] = candidate;
+      }
+    }
+    std::swap(reachable_, new_reachable_);
+  }
+
+  // Returns true iff sum might be expressible as a weighted sum of the added
+  // value. Any sum >= LastValue() is always considered potentially reachable.
+  bool MightBeReachable(int64_t sum) const {
+    if (sum >= reachable_.back()) return true;
+    return std::binary_search(reachable_.begin(), reachable_.end(), sum);
+  }
+
+  const std::array<int64_t, n>& reachable() const { return reachable_; }
+  int64_t LastValue() const { return reachable_.back(); }
+
+ private:
+  std::array<int64_t, n> reachable_;
+  std::array<int64_t, n> new_reachable_;
 };
 
 // Use Dynamic programming to solve a single knapsack. This is used by the
@@ -282,7 +374,7 @@ class IncrementalAverage {
   // Initializes the average with 'initial_average' and number of records to 0.
   explicit IncrementalAverage(double initial_average)
       : average_(initial_average) {}
-  IncrementalAverage() {}
+  IncrementalAverage() = default;
 
   // Sets the number of records to 0 and average to 'reset_value'.
   void Reset(double reset_value);
@@ -379,6 +471,61 @@ void CompressTuples(absl::Span<const int64_t> domain_sizes,
 std::vector<std::vector<absl::InlinedVector<int64_t, 2>>> FullyCompressTuples(
     absl::Span<const int64_t> domain_sizes,
     std::vector<std::vector<int64_t>>* tuples);
+
+// Keep the top n elements from a stream of elements.
+//
+// TODO(user): We could use gtl::TopN when/if it gets open sourced. Note that
+// we might be slighlty faster here since we use an indirection and don't move
+// the Element class around as much.
+template <typename Element, typename Score>
+class TopN {
+ public:
+  explicit TopN(int n) : n_(n) {}
+
+  void Clear() {
+    heap_.clear();
+    elements_.clear();
+  }
+
+  void Add(Element e, Score score) {
+    if (heap_.size() < n_) {
+      const int index = elements_.size();
+      heap_.push_back({index, score});
+      elements_.push_back(std::move(e));
+      if (heap_.size() == n_) {
+        // TODO(user): We could delay that on the n + 1 push.
+        std::make_heap(heap_.begin(), heap_.end());
+      }
+    } else {
+      if (score <= heap_.front().score) return;
+      const int index_to_replace = heap_.front().index;
+      elements_[index_to_replace] = std::move(e);
+
+      // If needed, we could be faster here with an update operation.
+      std::pop_heap(heap_.begin(), heap_.end());
+      heap_.back() = {index_to_replace, score};
+      std::push_heap(heap_.begin(), heap_.end());
+    }
+  }
+
+  bool empty() const { return elements_.empty(); }
+
+  const std::vector<Element>& UnorderedElements() const { return elements_; }
+
+ private:
+  const int n_;
+
+  // We keep a heap of the n highest score.
+  struct HeapElement {
+    int index;  // in elements_;
+    Score score;
+    bool operator<(const HeapElement& other) const {
+      return score > other.score;
+    }
+  };
+  std::vector<HeapElement> heap_;
+  std::vector<Element> elements_;
+};
 
 // ============================================================================
 // Implementation.

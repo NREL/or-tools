@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <string>
@@ -401,7 +402,7 @@ class DomainIntVar : public IntVar {
 
     virtual IntVar* GetOrMakeValueWatcher(int64_t value) = 0;
 
-    virtual void SetValueWatcher(IntVar* const boolvar, int64_t value) = 0;
+    virtual void SetValueWatcher(IntVar* boolvar, int64_t value) = 0;
   };
 
   // This class monitors the domain of the variable and updates the
@@ -885,7 +886,7 @@ class DomainIntVar : public IntVar {
 
     virtual IntVar* GetOrMakeUpperBoundWatcher(int64_t value) = 0;
 
-    virtual void SetUpperBoundWatcher(IntVar* const boolvar, int64_t value) = 0;
+    virtual void SetUpperBoundWatcher(IntVar* boolvar, int64_t value) = 0;
   };
 
   // This class watches the bounds of the variable and updates the
@@ -1329,9 +1330,8 @@ class DomainIntVar : public IntVar {
   };
 
   // ----- Main Class -----
-  DomainIntVar(Solver* const s, int64_t vmin, int64_t vmax,
-               const std::string& name);
-  DomainIntVar(Solver* const s, const std::vector<int64_t>& sorted_values,
+  DomainIntVar(Solver* s, int64_t vmin, int64_t vmax, const std::string& name);
+  DomainIntVar(Solver* s, const std::vector<int64_t>& sorted_values,
                const std::string& name);
   ~DomainIntVar() override;
 
@@ -2898,7 +2898,7 @@ class SubCstIntVar : public IntVar {
     const int64_t cst_;
   };
 
-  SubCstIntVar(Solver* const s, IntVar* v, int64_t c);
+  SubCstIntVar(Solver* s, IntVar* v, int64_t c);
   ~SubCstIntVar() override;
 
   int64_t Min() const override;
@@ -3032,7 +3032,7 @@ class OppIntVar : public IntVar {
     int64_t Value() const override { return -iterator_->Value(); }
   };
 
-  OppIntVar(Solver* const s, IntVar* v);
+  OppIntVar(Solver* s, IntVar* v);
   ~OppIntVar() override;
 
   int64_t Min() const override;
@@ -3208,7 +3208,7 @@ class TimesPosCstIntVar : public TimesCstIntVar {
     const int64_t cst_;
   };
 
-  TimesPosCstIntVar(Solver* const s, IntVar* v, int64_t c);
+  TimesPosCstIntVar(Solver* s, IntVar* v, int64_t c);
   ~TimesPosCstIntVar() override;
 
   int64_t Min() const override;
@@ -3323,7 +3323,7 @@ class TimesPosCstBoolVar : public TimesCstIntVar {
     const int64_t cst_;
   };
 
-  TimesPosCstBoolVar(Solver* const s, BooleanVar* v, int64_t c);
+  TimesPosCstBoolVar(Solver* s, BooleanVar* v, int64_t c);
   ~TimesPosCstBoolVar() override;
 
   int64_t Min() const override;
@@ -3474,7 +3474,7 @@ class TimesNegCstIntVar : public TimesCstIntVar {
     const int64_t cst_;
   };
 
-  TimesNegCstIntVar(Solver* const s, IntVar* v, int64_t c);
+  TimesNegCstIntVar(Solver* s, IntVar* v, int64_t c);
   ~TimesNegCstIntVar() override;
 
   int64_t Min() const override;
@@ -6378,7 +6378,7 @@ IntVarIterator* BooleanVar::MakeDomainIterator(bool reversible) const {
 
 // ----- API -----
 
-void CleanVariableOnFail(IntVar* const var) {
+void CleanVariableOnFail(IntVar* var) {
   DCHECK_EQ(DOMAIN_INT_VAR, var->VarType());
   DomainIntVar* const dvar = reinterpret_cast<DomainIntVar*>(var);
   dvar->CleanInProcess();
@@ -6399,7 +6399,7 @@ Constraint* SetIsGreaterOrEqual(IntVar* const var,
   return dvar->SetIsGreaterOrEqual(values, vars);
 }
 
-void RestoreBoolValue(IntVar* const var) {
+void RestoreBoolValue(IntVar* var) {
   DCHECK_EQ(BOOLEAN_VAR, var->VarType());
   BooleanVar* const boolean_var = reinterpret_cast<BooleanVar*>(var);
   boolean_var->RestoreValue();
@@ -6783,7 +6783,7 @@ IntExpr* Solver::MakeDifference(int64_t value, IntExpr* const expr) {
 IntExpr* Solver::MakeOpposite(IntExpr* const expr) {
   CHECK_EQ(this, expr->solver());
   if (expr->Bound()) {
-    return MakeIntConst(-expr->Min());
+    return MakeIntConst(CapOpp(expr->Min()));
   }
   IntExpr* result =
       Cache()->FindExprExpression(expr, ModelCache::EXPR_OPPOSITE);
@@ -7407,7 +7407,7 @@ void IntVar::SetValues(const std::vector<int64_t>& values) {
       // that uses a global, static shared (and locked) storage.
       // TODO(user): [optional] consider porting
       // STLSortAndRemoveDuplicates from ortools/base/stl_util.h to the
-      // existing open_source/base/stl_util.h and using it here.
+      // existing base/stl_util.h and using it here.
       // TODO(user): We could filter out values not in the var.
       std::vector<int64_t>& tmp = solver()->tmp_vector_;
       tmp.clear();
@@ -7448,7 +7448,7 @@ void IntVar::SetValues(const std::vector<int64_t>& values) {
 }
 // ---------- BaseIntExpr ---------
 
-void LinkVarExpr(Solver* const s, IntExpr* const expr, IntVar* const var) {
+void LinkVarExpr(Solver* s, IntExpr* expr, IntVar* var) {
   if (!var->Bound()) {
     if (var->VarType() == DOMAIN_INT_VAR) {
       DomainIntVar* dvar = reinterpret_cast<DomainIntVar*>(var);

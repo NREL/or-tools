@@ -228,6 +228,20 @@ class Domain {
   int64_t Size() const;
 
   /**
+   * Returns true if the domain has just two values. This often mean a non-fixed
+   * Boolean variable.
+   */
+  bool HasTwoValues() const {
+    if (intervals_.size() == 1) {
+      return intervals_[0].end == intervals_[0].start + 1;
+    } else if (intervals_.size() == 2) {
+      return intervals_[0].end == intervals_[0].start &&
+             intervals_[1].end == intervals_[1].start;
+    }
+    return false;
+  }
+
+  /**
    * Returns the min value of the domain.
    * The domain must not be empty.
    */
@@ -243,6 +257,12 @@ class Domain {
    * Returns the value closest to zero. If there is a tie, pick positive one.
    */
   int64_t SmallestValue() const;
+
+  /**
+   * Returns the value closest to the given point.
+   * If there is a tie, pick larger one.
+   */
+  int64_t ClosestValue(int64_t wanted) const;
 
   /**
    * Returns the closest value in the domain that is <= (resp. >=) to the input.
@@ -268,6 +288,11 @@ class Domain {
    * Returns true iff value is in Domain.
    */
   bool Contains(int64_t value) const;
+
+  /**
+   * Returns the distance from the value to the domain.
+   */
+  int64_t Distance(int64_t value) const;
 
   /**
    * Returns true iff D is included in the given domain.
@@ -360,7 +385,7 @@ class Domain {
    *
    * For instance Domain(1, 7).InverseMultiplicationBy(2) == Domain(1, 3).
    */
-  Domain InverseMultiplicationBy(const int64_t coeff) const;
+  Domain InverseMultiplicationBy(int64_t coeff) const;
 
   /**
    * Returns a superset of {x ∈ Int64, ∃ e ∈ D, ∃ m ∈ modulo, x = e % m }.

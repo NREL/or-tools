@@ -36,6 +36,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/random/random.h"
+#include "absl/strings/string_view.h"
 #include "ortools/base/hash.h"
 #include "ortools/base/strong_vector.h"
 #include "ortools/bop/bop_base.h"
@@ -118,7 +119,7 @@ class LocalSearchAssignmentIterator;
 // in the new solution can be greater than max_num_decisions.
 class LocalSearchOptimizer : public BopOptimizerBase {
  public:
-  LocalSearchOptimizer(const std::string& name, int max_num_decisions,
+  LocalSearchOptimizer(absl::string_view name, int max_num_decisions,
                        absl::BitGenRef random, sat::SatSolver* sat_propagator);
   ~LocalSearchOptimizer() override;
 
@@ -163,7 +164,7 @@ class LocalSearchOptimizer : public BopOptimizerBase {
 template <typename IntType>
 class BacktrackableIntegerSet {
  public:
-  BacktrackableIntegerSet() {}
+  BacktrackableIntegerSet() = default;
 
   // Prepares the class for integers in [0, n) and initializes the set to the
   // empty one. Note that this run in O(n). Once resized, it is better to call

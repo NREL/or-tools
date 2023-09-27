@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/random/bit_gen_ref.h"
 #include "absl/random/random.h"
 #include "absl/strings/string_view.h"
@@ -109,7 +110,7 @@ bool SubstituteVariable(int var, int64_t var_coeff_in_definition,
 // graph.
 class ActivityBoundHelper {
  public:
-  ActivityBoundHelper() {}
+  ActivityBoundHelper() = default;
 
   // The at most one constraint must be added before linear constraint are
   // processed. The functions below will still works, but do nothing more than

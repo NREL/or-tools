@@ -16,6 +16,7 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -45,6 +46,7 @@
 #include "scip/cons_indicator.h"
 #include "scip/scip.h"
 #include "scip/scip_copy.h"
+#include "scip/scip_numerics.h"
 #include "scip/scip_param.h"
 #include "scip/scip_prob.h"
 #include "scip/scipdefplugins.h"
@@ -71,6 +73,8 @@ class SCIPInterface : public MPSolverInterface {
   std::optional<MPSolutionResponse> DirectlySolveProto(
       const MPModelRequest& request, std::atomic<bool>* interrupt) override;
   void Reset() override;
+
+  double infinity() override;
 
   void SetVariableBounds(int var_index, double lb, double ub) override;
   void SetVariableInteger(int var_index, bool integer) override;
@@ -225,12 +229,11 @@ class ScipConstraintHandlerForMPCallback
   std::vector<CallbackRangeConstraint> SeparateIntegerSolution(
       const ScipConstraintHandlerContext& context, const EmptyStruct&) override;
 
-  MPCallback* const mp_callback() const { return mp_callback_; }
+  MPCallback* mp_callback() const { return mp_callback_; }
 
  private:
   std::vector<CallbackRangeConstraint> SeparateSolution(
-      const ScipConstraintHandlerContext& context,
-      const bool at_integer_solution);
+      const ScipConstraintHandlerContext& context, bool at_integer_solution);
 
   MPCallback* const mp_callback_;
 };
@@ -307,6 +310,8 @@ absl::Status SCIPInterface::CreateSCIP() {
       scip_, maximize_ ? SCIP_OBJSENSE_MAXIMIZE : SCIP_OBJSENSE_MINIMIZE));
   return absl::OkStatus();
 }
+
+double SCIPInterface::infinity() { return SCIPinfinity(scip_); }
 
 SCIP* SCIPInterface::DeleteSCIP(bool return_scip) {
   // NOTE(user): DeleteSCIP() shouldn't "give up" mid-stage if it fails, since

@@ -30,13 +30,13 @@ cc_library(
     srcs = ["model_builder_helper.cc"],
     hdrs = ["model_builder_helper.h"],
     copts = [
-        "-DUSE_HIGHS",
         "-DUSE_PDLP",
         "-DUSE_SCIP",
         "-DUSE_LP_PARSER",
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//ortools/base:file",
         "//ortools/linear_solver",
         "//ortools/linear_solver:linear_solver_cc_proto",
         "//ortools/linear_solver:model_exporter",

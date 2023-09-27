@@ -11,8 +11,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_cc//cc:defs.bzl", "cc_proto_library")
-load("@com_google_protobuf//:protobuf.bzl", "py_proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_python//python:proto.bzl", "py_proto_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -29,8 +30,7 @@ cc_proto_library(
 
 py_proto_library(
     name = "solve_log_py_pb2",
-    srcs = ["solve_log.proto"],
-    deps = [":solvers_py_pb2"],
+    deps = [":solve_log_proto"],
 )
 
 proto_library(
@@ -46,8 +46,9 @@ cc_proto_library(
 
 py_proto_library(
     name = "solvers_py_pb2",
-    srcs = ["solvers.proto"],
-    deps = ["//ortools/glop:parameters_py_pb2"],
+    deps = [
+        ":solvers_proto",
+    ],
 )
 
 cc_library(
@@ -109,7 +110,6 @@ cc_library(
         ":trust_region",
         "//ortools/base",
         "//ortools/base:mathutil",
-        "//ortools/base:status_macros",
         "//ortools/base:timer",
         "//ortools/glop:parameters_cc_proto",
         "//ortools/glop:preprocessor",
@@ -117,11 +117,13 @@ cc_library(
         "//ortools/lp_data",
         "//ortools/lp_data:base",
         "//ortools/lp_data:proto_utils",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/time",
+        "@com_google_protobuf//:protobuf",
         "@eigen//:eigen3",
     ],
 )
@@ -147,7 +149,7 @@ cc_test(
         "//ortools/linear_solver:linear_solver_cc_proto",
         "//ortools/lp_data",
         "//ortools/lp_data:base",
-        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@eigen//:eigen3",
@@ -178,6 +180,7 @@ cc_test(
         ":quadratic_program",
         ":test_util",
         "//ortools/base:protobuf_util",
+        "//ortools/base:status_macros",
         "//ortools/linear_solver:linear_solver_cc_proto",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -196,13 +199,14 @@ cc_library(
         "//ortools/base:status_macros",
         "//ortools/linear_solver:linear_solver_cc_proto",
         "//ortools/linear_solver:model_exporter",
-        "//ortools/lp_data:mps_reader",
+        "//ortools/lp_data:mps_reader_template",
         "//ortools/util:file_util",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
         "@eigen//:eigen3",
     ],
 )
@@ -291,6 +295,7 @@ cc_test(
         ":sharder",
         "//ortools/base",
         "//ortools/base:mathutil",
+        "//ortools/base:threadpool",
         "@com_google_absl//absl/random:distributions",
         "@eigen//:eigen3",
     ],

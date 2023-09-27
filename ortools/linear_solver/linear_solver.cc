@@ -11,8 +11,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//
-
 #include "ortools/linear_solver/linear_solver.h"
 
 #if !defined(_MSC_VER)
@@ -364,11 +362,17 @@ bool MPSolver::SetSolverSpecificParametersAsString(
 
 // ----- Solver -----
 
-#if defined(USE_CLP) || defined(USE_CBC)
-extern MPSolverInterface* BuildCLPInterface(MPSolver* const solver);
+#if defined(USE_BOP)
+extern MPSolverInterface* BuildBopInterface(MPSolver* const solver);
 #endif
 #if defined(USE_CBC)
 extern MPSolverInterface* BuildCBCInterface(MPSolver* const solver);
+#endif
+#if defined(USE_CLP) || defined(USE_CBC)
+extern MPSolverInterface* BuildCLPInterface(MPSolver* const solver);
+#endif
+#if defined(USE_GLOP)
+extern MPSolverInterface* BuildGLOPInterface(MPSolver* const solver);
 #endif
 #if defined(USE_GLPK)
 extern MPSolverInterface* BuildGLPKInterface(bool mip, MPSolver* const solver);
@@ -376,9 +380,9 @@ extern MPSolverInterface* BuildGLPKInterface(bool mip, MPSolver* const solver);
 #if defined(USE_HIGHS)
 extern MPSolverInterface* BuildHighsInterface(bool mip, MPSolver* const solver);
 #endif
-extern MPSolverInterface* BuildBopInterface(MPSolver* const solver);
-extern MPSolverInterface* BuildGLOPInterface(MPSolver* const solver);
+#if defined(USE_PDLP)
 extern MPSolverInterface* BuildPdlpInterface(MPSolver* const solver);
+#endif
 extern MPSolverInterface* BuildSatInterface(MPSolver* const solver);
 #if defined(USE_SCIP)
 extern MPSolverInterface* BuildSCIPInterface(MPSolver* const solver);
@@ -397,21 +401,21 @@ namespace {
 MPSolverInterface* BuildSolverInterface(MPSolver* const solver) {
   DCHECK(solver != nullptr);
   switch (solver->ProblemType()) {
+#if defined(USE_BOP)
     case MPSolver::BOP_INTEGER_PROGRAMMING:
       return BuildBopInterface(solver);
-    case MPSolver::GLOP_LINEAR_PROGRAMMING:
-      return BuildGLOPInterface(solver);
-    case MPSolver::PDLP_LINEAR_PROGRAMMING:
-      return BuildPdlpInterface(solver);
-    case MPSolver::SAT_INTEGER_PROGRAMMING:
-      return BuildSatInterface(solver);
-#if defined(USE_CLP) || defined(USE_CBC)
-    case MPSolver::CLP_LINEAR_PROGRAMMING:
-      return BuildCLPInterface(solver);
 #endif
 #if defined(USE_CBC)
     case MPSolver::CBC_MIXED_INTEGER_PROGRAMMING:
       return BuildCBCInterface(solver);
+#endif
+#if defined(USE_CLP) || defined(USE_CBC)
+    case MPSolver::CLP_LINEAR_PROGRAMMING:
+      return BuildCLPInterface(solver);
+#endif
+#if defined(USE_GLOP)
+    case MPSolver::GLOP_LINEAR_PROGRAMMING:
+      return BuildGLOPInterface(solver);
 #endif
 #if defined(USE_GLPK)
     case MPSolver::GLPK_LINEAR_PROGRAMMING:
@@ -425,6 +429,12 @@ MPSolverInterface* BuildSolverInterface(MPSolver* const solver) {
     case MPSolver::HIGHS_MIXED_INTEGER_PROGRAMMING:
       return BuildHighsInterface(true, solver);
 #endif
+#if defined(USE_PDLP)
+    case MPSolver::PDLP_LINEAR_PROGRAMMING:
+      return BuildPdlpInterface(solver);
+#endif
+    case MPSolver::SAT_INTEGER_PROGRAMMING:
+      return BuildSatInterface(solver);
 #if defined(USE_SCIP)
     case MPSolver::SCIP_MIXED_INTEGER_PROGRAMMING:
       return BuildSCIPInterface(solver);
@@ -483,8 +493,17 @@ extern bool GurobiIsCorrectlyInstalled();
 
 // static
 bool MPSolver::SupportsProblemType(OptimizationProblemType problem_type) {
+#ifdef USE_BOP
+  if (problem_type == BOP_INTEGER_PROGRAMMING) return true;
+#endif
+#ifdef USE_CBC
+  if (problem_type == CBC_MIXED_INTEGER_PROGRAMMING) return true;
+#endif
 #ifdef USE_CLP
   if (problem_type == CLP_LINEAR_PROGRAMMING) return true;
+#endif
+#ifdef USE_GLOP
+  if (problem_type == GLOP_LINEAR_PROGRAMMING) return true;
 #endif
 #ifdef USE_GLPK
   if (problem_type == GLPK_LINEAR_PROGRAMMING ||
@@ -498,29 +517,26 @@ bool MPSolver::SupportsProblemType(OptimizationProblemType problem_type) {
     return true;
   }
 #endif
-  if (problem_type == BOP_INTEGER_PROGRAMMING) return true;
-  if (problem_type == SAT_INTEGER_PROGRAMMING) return true;
-  if (problem_type == GLOP_LINEAR_PROGRAMMING) return true;
+#ifdef USE_PDLP
   if (problem_type == PDLP_LINEAR_PROGRAMMING) return true;
+#endif
   if (problem_type == GUROBI_LINEAR_PROGRAMMING ||
       problem_type == GUROBI_MIXED_INTEGER_PROGRAMMING) {
     return GurobiIsCorrectlyInstalled();
   }
+  if (problem_type == SAT_INTEGER_PROGRAMMING) return true;
 #ifdef USE_SCIP
   if (problem_type == SCIP_MIXED_INTEGER_PROGRAMMING) return true;
-#endif
-#ifdef USE_CBC
-  if (problem_type == CBC_MIXED_INTEGER_PROGRAMMING) return true;
-#endif
-#ifdef USE_XPRESS
-  if (problem_type == XPRESS_MIXED_INTEGER_PROGRAMMING ||
-      problem_type == XPRESS_LINEAR_PROGRAMMING) {
-    return true;
-  }
 #endif
 #ifdef USE_CPLEX
   if (problem_type == CPLEX_LINEAR_PROGRAMMING ||
       problem_type == CPLEX_MIXED_INTEGER_PROGRAMMING) {
+    return true;
+  }
+#endif
+#ifdef USE_XPRESS
+  if (problem_type == XPRESS_MIXED_INTEGER_PROGRAMMING ||
+      problem_type == XPRESS_LINEAR_PROGRAMMING) {
     return true;
   }
 #endif
@@ -670,16 +686,20 @@ MPConstraint* MPSolver::LookupConstraintOrNull(
 // ----- Methods using protocol buffers -----
 
 MPSolverResponseStatus MPSolver::LoadModelFromProto(
-    const MPModelProto& input_model, std::string* error_message) {
+    const MPModelProto& input_model, std::string* error_message,
+    bool clear_names) {
   Clear();
 
   // The variable and constraint names are dropped, because we allow
   // duplicate names in the proto (they're not considered as 'ids'),
   // unlike the MPSolver C++ API which crashes if there are duplicate names.
   // Clearing the names makes the MPSolver generate unique names.
-  return LoadModelFromProtoInternal(input_model, /*clear_names=*/true,
-                                    /*check_model_validity=*/true,
-                                    error_message);
+  return LoadModelFromProtoInternal(
+      input_model,
+      /*name_policy=*/
+      clear_names ? DEFAULT_CLEAR_NAMES
+                  : INVALID_MODEL_ON_DUPLICATE_NONEMPTY_NAMES,
+      /*check_model_validity=*/true, error_message);
 }
 
 MPSolverResponseStatus MPSolver::LoadModelFromProtoWithUniqueNamesOrDie(
@@ -690,29 +710,125 @@ MPSolverResponseStatus MPSolver::LoadModelFromProtoWithUniqueNamesOrDie(
   GenerateVariableNameIndex();
   GenerateConstraintNameIndex();
 
-  return LoadModelFromProtoInternal(input_model, /*clear_names=*/false,
-                                    /*check_model_validity=*/true,
-                                    error_message);
+  return LoadModelFromProtoInternal(
+      input_model, /*name_policy=*/DIE_ON_DUPLICATE_NONEMPTY_NAMES,
+      /*check_model_validity=*/true, error_message);
 }
 
+namespace {
+// Iterates over all the variable names. See usage.
+class MPVariableNamesIterator {
+ public:
+  explicit MPVariableNamesIterator(const MPModelProto& model) : model_(model) {}
+  int index() const { return index_; }
+  absl::string_view name() const { return model_.variable(index_).name(); }
+  static std::string DescribeIndex(int index) {
+    return absl::StrFormat("variable[%d]", index);
+  }
+  void Advance() { ++index_; }
+  bool AtEnd() const { return index_ == model_.variable_size(); }
+
+ private:
+  const MPModelProto& model_;
+  int index_ = 0;
+};
+
+// Iterates over all the constraint and general_constaint names. See usage.
+class MPConstraintNamesIterator {
+ public:
+  explicit MPConstraintNamesIterator(const MPModelProto& model)
+      : model_(model),
+        // To iterate both on the constraint[] and the general_constraint[]
+        // field, we use the bit trick that i ≥ 0 corresponds to constraint[i],
+        // and i < 0 corresponds to general_constraint[~i = -i-1].
+        index_(model_.constraint().empty() ? ~0 : 0) {}
+  int index() const { return index_; }
+  absl::string_view name() const {
+    return index_ >= 0 ? model_.constraint(index_).name()
+                       // As of 2023-04, the only names of MPGeneralConstraints
+                       // that are actually ingested are the
+                       // MPIndicatorConstraint.constraint.name.
+                       : model_.general_constraint(~index_)
+                             .indicator_constraint()
+                             .constraint()
+                             .name();
+  }
+  static std::string DescribeIndex(int index) {
+    return index >= 0
+               ? absl::StrFormat("constraint[%d]", index)
+               : absl::StrFormat(
+                     "general_constraint[%d].indicator_constraint.constraint",
+                     ~index);
+  }
+  void Advance() {
+    if (index_ >= 0) {
+      if (++index_ == model_.constraint_size()) index_ = ~0;
+    } else {
+      --index_;
+    }
+  }
+  bool AtEnd() const { return ~index_ == model_.general_constraint_size(); }
+
+ private:
+  const MPModelProto& model_;
+  int index_ = 0;
+};
+
+// Looks at the `name` field of all the given MPModelProto fields, and if there
+// is a duplicate name, returns a descriptive error message.
+// If no duplicate is found, returns the empty string.
+template <class NameIterator>
+std::string FindDuplicateNamesError(NameIterator name_iterator) {
+  absl::flat_hash_map<absl::string_view, int> name_to_index;
+  for (; !name_iterator.AtEnd(); name_iterator.Advance()) {
+    if (name_iterator.name().empty()) continue;
+    const int index =
+        name_to_index.insert({name_iterator.name(), name_iterator.index()})
+            .first->second;
+    if (index != name_iterator.index()) {
+      return absl::StrFormat(
+          "Duplicate name '%s' in %s.name() and %s.name()",
+          name_iterator.name(), NameIterator::DescribeIndex(index),
+          NameIterator::DescribeIndex(name_iterator.index()));
+    }
+  }
+  return "";  // No duplicate found.
+}
+}  // namespace
+
 MPSolverResponseStatus MPSolver::LoadModelFromProtoInternal(
-    const MPModelProto& input_model, bool clear_names,
+    const MPModelProto& input_model, ModelProtoNamesPolicy name_policy,
     bool check_model_validity, std::string* error_message) {
   CHECK(error_message != nullptr);
+  std::string error;
   if (check_model_validity) {
-    const std::string error = FindErrorInMPModelProto(input_model);
-    if (!error.empty()) {
-      *error_message = error;
+    error = FindErrorInMPModelProto(input_model);
+  }
+  // We preemptively check for duplicate names even for the
+  // DIE_ON_DUPLICATE_NONEMPTY_NAMES policy, because it yields more informative
+  // error messages than if we wait for InsertIfNotPresent() to crash.
+  if (error.empty() && name_policy != DEFAULT_CLEAR_NAMES) {
+    error = FindDuplicateNamesError(MPVariableNamesIterator(input_model));
+    if (error.empty()) {
+      error = FindDuplicateNamesError(MPConstraintNamesIterator(input_model));
+    }
+    if (!error.empty() && name_policy == DIE_ON_DUPLICATE_NONEMPTY_NAMES) {
+      LOG(FATAL) << error;
+    }
+  }
+  const bool clear_names = name_policy == DEFAULT_CLEAR_NAMES;
+
+  if (!error.empty()) {
+    *error_message = error;
+    LOG_IF(INFO, OutputIsEnabled())
+        << "Invalid model given to LoadModelFromProto(): " << error;
+    if (absl::GetFlag(FLAGS_mpsolver_bypass_model_validation)) {
       LOG_IF(INFO, OutputIsEnabled())
-          << "Invalid model given to LoadModelFromProto(): " << error;
-      if (absl::GetFlag(FLAGS_mpsolver_bypass_model_validation)) {
-        LOG_IF(INFO, OutputIsEnabled())
-            << "Ignoring the model error(s) because of"
-            << " --mpsolver_bypass_model_validation.";
-      } else {
-        return absl::StrContains(error, "Infeasible") ? MPSOLVER_INFEASIBLE
-                                                      : MPSOLVER_MODEL_INVALID;
-      }
+          << "Ignoring the model error(s) because of"
+          << " --mpsolver_bypass_model_validation.";
+    } else {
+      return absl::StrContains(error, "Infeasible") ? MPSOLVER_INFEASIBLE
+                                                    : MPSOLVER_MODEL_INVALID;
     }
   }
 
@@ -848,7 +964,8 @@ void MPSolver::FillSolutionResponseProto(MPSolutionResponse* response) const {
   response->Clear();
   response->set_status(
       ResultStatusToMPSolverResponseStatus(interface_->result_status_));
-  response->mutable_solve_info()->set_solve_wall_time_seconds(wall_time());
+  response->mutable_solve_info()->set_solve_wall_time_seconds(wall_time() /
+                                                              1000.0);
   if (interface_->result_status_ == MPSolver::OPTIMAL ||
       interface_->result_status_ == MPSolver::FEASIBLE) {
     response->set_objective_value(Objective().Value());
@@ -927,7 +1044,7 @@ void MPSolver::SolveWithProto(const MPModelRequest& model_request,
   }
   std::string error_message;
   response->set_status(solver.LoadModelFromProtoInternal(
-      optional_model->get(), /*clear_names=*/true,
+      optional_model->get(), /*name_policy=*/DEFAULT_CLEAR_NAMES,
       /*check_model_validity=*/false, &error_message));
   // Even though we don't re-check model validity here, there can be some
   // problems found by LoadModelFromProto, eg. unsupported features.
@@ -1277,6 +1394,8 @@ void MPSolver::SetStartingLpBasis(
     const std::vector<BasisStatus>& constraint_statuses) {
   interface_->SetStartingLpBasis(variable_statuses, constraint_statuses);
 }
+
+double MPSolver::solver_infinity() { return interface_->infinity(); }
 
 MPVariable* MPSolver::MakeVar(double lb, double ub, bool integer,
                               const std::string& name) {

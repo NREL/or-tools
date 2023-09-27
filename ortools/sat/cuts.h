@@ -14,6 +14,9 @@
 #ifndef OR_TOOLS_SAT_CUTS_H_
 #define OR_TOOLS_SAT_CUTS_H_
 
+#include <stdint.h>
+
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <limits>
@@ -21,8 +24,11 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/btree_map.h"
+#include "absl/container/btree_set.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/numeric/int128.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "ortools/base/strong_vector.h"
@@ -39,19 +45,15 @@ namespace sat {
 
 // A "cut" generator on a set of IntegerVariable.
 //
-// The generate_cuts() function will usually be called with the current LP
-// optimal solution (but should work for any lp_values). Note that a
-// CutGenerator should:
+// The generate_cuts() function can get the current LP solution with
+// manager->LpValues(). Note that a CutGenerator should:
 // - Only look at the lp_values positions that corresponds to its 'vars' or
 //   their negation.
 // - Only add cuts in term of the same variables or their negation.
 struct CutGenerator {
   bool only_run_at_level_zero = false;
   std::vector<IntegerVariable> vars;
-  std::function<bool(
-      const absl::StrongVector<IntegerVariable, double>& lp_values,
-      LinearConstraintManager* manager)>
-      generate_cuts;
+  std::function<bool(LinearConstraintManager* manager)> generate_cuts;
 };
 
 // To simplify cut generation code, we use a more complex data structure than
@@ -67,9 +69,11 @@ struct CutTerm {
 
   std::string DebugString() const;
 
-  // Returns false and do nothing if this would cause an overflow.
-  // Otherwise do the subtitution X -> (1 - X') and update the rhs.
-  bool Complement(IntegerValue* rhs);
+  // Do the subtitution X -> (1 - X') and update the rhs.
+  //
+  // Our precondition on the sum of variable domains fitting an int64_t should
+  // ensure that this can never overflow.
+  void Complement(absl::int128* rhs);
 
   // Each term is of the form coeff * X where X is a variable with given
   // lp_value and with a domain in [0, bound_diff]. Note X is always >= 0.
@@ -102,7 +106,19 @@ struct CutData {
   bool AppendOneTerm(IntegerVariable var, IntegerValue coeff, double lp_value,
                      IntegerValue lb, IntegerValue ub);
 
-  IntegerValue rhs;
+  // These functions transform the cut by complementation.
+  bool AllCoefficientsArePositive() const;
+  void ComplementForPositiveCoefficients();
+  void ComplementForSmallerLpValues();
+
+  // Computes and return the cut violation.
+  double ComputeViolation() const;
+
+  std::string DebugString() const;
+
+  // Note that we use a 128 bit rhs so we can freely complement variable without
+  // running into overflow.
+  absl::int128 rhs;
   std::vector<CutTerm> terms;
 
   // This sorts terms and fill both num_relevant_entries and max_magnitude.
@@ -159,6 +175,34 @@ class ImpliedBoundsProcessor {
   // different lp_values or level zero bounds.
   void RecomputeCacheAndSeparateSomeImpliedBoundCuts(
       const absl::StrongVector<IntegerVariable, double>& lp_values);
+
+  // This assumes the term is simple: expr[0] = var - LB / UB - var. We use an
+  // implied lower bound on this expr, independently of the term.coeff sign.
+  //
+  // If possible, returns true and express X = bool_term + slack_term.
+  // If coeff of X is positive, then all coeff will be positive here.
+  bool DecomposeWithImpliedLowerBound(const CutTerm& term,
+                                      IntegerValue factor_t, CutTerm& bool_term,
+                                      CutTerm& slack_term);
+
+  // This assumes the term is simple: expr[0] = var - LB / UB - var. We use
+  // an implied upper bound on this expr, independently of term.coeff sign.
+  //
+  // If possible, returns true and express X = bool_term + slack_term.
+  // If coeff of X is positive, then bool_term will have a positive coeff but
+  // slack_term will have a negative one.
+  bool DecomposeWithImpliedUpperBound(const CutTerm& term,
+                                      IntegerValue factor_t, CutTerm& bool_term,
+                                      CutTerm& slack_term);
+
+  // We are about to apply the super-additive function f() to the CutData. Use
+  // implied bound information to eventually substitute and make the cut
+  // stronger. Returns the number of {lb_ib, ub_ib} applied.
+  //
+  // This should lead to stronger cuts even if the norms migth be worse.
+  std::pair<int, int> PostprocessWithImpliedBound(
+      const std::function<IntegerValue(IntegerValue)>& f, IntegerValue factor_t,
+      CutData* cut, CutDataBuilder* builder);
 
   bool TryToExpandWithLowerImpliedbound(IntegerValue factor_t, int i,
                                         bool complement, CutData* cut,
@@ -236,8 +280,10 @@ struct FlowInfo {
   // lp relaxation. Now that we usually only consider tight constraint were
   // flow_lp_value = capacity * bool_lp_value.
   IntegerValue capacity;
-  double flow_lp_value;
   double bool_lp_value;
+
+  // TODO(user): We don't use this in the heuristic currently.
+  double flow_lp_value;
 
   // The definition of the flow variable and the arc usage variable in term
   // of original problem variables. After we compute a cut on the flow and
@@ -250,7 +296,7 @@ struct FlowInfo {
 struct SingleNodeFlow {
   bool empty() const { return in_flow.empty() && out_flow.empty(); }
   void clear() {
-    demand = IntegerValue(0);
+    demand = 0;
     in_flow.clear();
     out_flow.clear();
     num_bool = 0;
@@ -259,7 +305,7 @@ struct SingleNodeFlow {
   }
   std::string DebugString() const;
 
-  IntegerValue demand;
+  absl::int128 demand;
   std::vector<FlowInfo> in_flow;
   std::vector<FlowInfo> out_flow;
 
@@ -271,12 +317,12 @@ struct SingleNodeFlow {
 
 class FlowCoverCutHelper {
  public:
+  ~FlowCoverCutHelper();
+
   // Extract a SingleNodeFlow relaxation from the base_ct and try to generate
   // a cut from it.
   bool ComputeFlowCoverRelaxationAndGenerateCut(
-      const LinearConstraint& base_ct,
-      const absl::StrongVector<IntegerVariable, double>& lp_values,
-      IntegerTrail* integer_trail, ImpliedBoundsProcessor* ib_helper);
+      const CutData& base_ct, ImpliedBoundsProcessor* ib_helper);
 
   // Try to generate a cut for the given single node flow problem. Returns true
   // if a cut was generated. It can be accessed by cut().
@@ -293,24 +339,21 @@ class FlowCoverCutHelper {
                         num_out_bin_);
   }
 
+  void SetSharedStatistics(SharedStatistics* stats) { shared_stats_ = stats; }
+
  private:
   // Try to extract a nice SingleNodeFlow relaxation for the given upper bounded
   // linear constraint.
-  bool ComputeFlowCoverRelaxation(
-      const LinearConstraint& base_ct,
-      const absl::StrongVector<IntegerVariable, double>& lp_values,
-      SingleNodeFlow* snf, IntegerTrail* integer_trail,
-      ImpliedBoundsProcessor* ib_helper);
+  bool ComputeFlowCoverRelaxation(const CutData& base_ct, SingleNodeFlow* snf,
+                                  ImpliedBoundsProcessor* ib_helper);
 
   // Helpers used by ComputeFlowCoverRelaxation() to convert one linear term.
-  bool TryXminusLB(IntegerVariable var, double lp_value, IntegerValue lb,
-                   IntegerValue ub, IntegerValue coeff,
-                   ImpliedBoundsProcessor* ib_helper,
+  bool TryXminusLB(const CutTerm& term, ImpliedBoundsProcessor* ib_helper,
                    SingleNodeFlow* result) const;
-  bool TryUBminusX(IntegerVariable var, double lp_value, IntegerValue lb,
-                   IntegerValue ub, IntegerValue coeff,
-                   ImpliedBoundsProcessor* ib_helper,
+  bool TryUBminusX(const CutTerm& term, ImpliedBoundsProcessor* ib_helper,
                    SingleNodeFlow* result) const;
+  void FinishAndAddFlowInfo(const CutTerm& term, FlowInfo* info,
+                            SingleNodeFlow* result) const;
 
   // Temporary memory to avoid reallocating the vector.
   SingleNodeFlow snf_;
@@ -326,6 +369,10 @@ class FlowCoverCutHelper {
 
   LinearConstraintBuilder cut_builder_;
   LinearConstraint cut_;
+
+  // Stats.
+  SharedStatistics* shared_stats_ = nullptr;
+  int64_t num_aborts_ = 0;
 };
 
 // Visible for testing. Returns a function f on integers such that:
@@ -362,6 +409,47 @@ IntegerValue GetFactorT(IntegerValue rhs_remainder, IntegerValue divisor,
 std::function<IntegerValue(IntegerValue)> GetSuperAdditiveRoundingFunction(
     IntegerValue rhs_remainder, IntegerValue divisor, IntegerValue t,
     IntegerValue max_scaling);
+
+// If we have an equation sum ci.Xi >= rhs with everything positive, and all
+// ci are >= min_magnitude then any ci >= rhs can be set to rhs. Also if
+// some ci are in [rhs - min, rhs) then they can be strenghtened to rhs - min.
+//
+// If we apply this to the negated equation (sum -ci.Xi + sum cj.Xj <= -rhs)
+// with potentially positive terms, this reduce to apply a super-additive
+// function:
+//
+// Plot look like:
+//            x=-rhs   x=0
+//              |       |
+// y=0 :        |       ---------------------------------
+//              |    ---
+//              |   /
+//              |---
+// y=-rhs -------
+//
+// TODO(user): Extend it for ci >= max_magnitude, we can probaly "lift" such
+// coefficient.
+std::function<IntegerValue(IntegerValue)> GetSuperAdditiveStrengtheningFunction(
+    IntegerValue positive_rhs, IntegerValue min_magnitude);
+
+// Similar to above but with scaling of the linear part to just have at most
+// scaling values.
+std::function<IntegerValue(IntegerValue)>
+GetSuperAdditiveStrengtheningMirFunction(IntegerValue positive_rhs,
+                                         IntegerValue scaling);
+
+// Given a super-additive non-decreasing function f(), we periodically extend
+// its restriction from [-period, 0] to Z. Such extension is not always
+// super-additive and it is up to the caller to know when this is true or not.
+inline std::function<IntegerValue(IntegerValue)> ExtendNegativeFunction(
+    std::function<IntegerValue(IntegerValue)> base_f, IntegerValue period) {
+  const IntegerValue m = -base_f(-period);
+  return [m, period, base_f](IntegerValue v) {
+    const IntegerValue r = PositiveRemainder(v, period);
+    const IntegerValue output_r = m + base_f(r - period);
+    return FloorRatio(v, period) * m + output_r;
+  };
+}
 
 // Given an upper bounded linear constraint, this function tries to transform it
 // to a valid cut that violate the given LP solution using integer rounding.
@@ -406,7 +494,7 @@ class IntegerRoundingCutHelper {
                   ImpliedBoundsProcessor* ib_processor = nullptr);
 
   // If successful, info about the last generated cut.
-  const LinearConstraint& cut() const { return cut_; }
+  const CutData& cut() const { return cut_; }
 
   void SetSharedStatistics(SharedStatistics* stats) { shared_stats_ = stats; }
 
@@ -414,9 +502,6 @@ class IntegerRoundingCutHelper {
   std::string Info() const { return absl::StrCat("ib_lift=", num_ib_used_); }
 
  private:
-  bool HasComplementedImpliedBound(const CutTerm& entry,
-                                   ImpliedBoundsProcessor* ib_processor);
-
   double GetScaledViolation(IntegerValue divisor, IntegerValue max_scaling,
                             IntegerValue remainder_threshold,
                             const CutData& cut);
@@ -428,9 +513,8 @@ class IntegerRoundingCutHelper {
   std::vector<IntegerValue> best_rs_;
 
   int64_t num_ib_used_ = 0;
-  CutData best_cut_;
   CutDataBuilder cut_builder_;
-  LinearConstraint cut_;
+  CutData cut_;
 
   std::vector<std::pair<int, IntegerValue>> adjusted_coeffs_;
   std::vector<std::pair<int, IntegerValue>> best_adjusted_coeffs_;
@@ -456,22 +540,19 @@ class CoverCutHelper {
  public:
   ~CoverCutHelper();
 
-  // Complements term to make sure all coeff are positive, returns false on
-  // overflow.
+  // Try to find a cut with a knapsack heuristic. This assumes an input with all
+  // coefficients positive. If this returns true, you can get the cut via cut().
   //
-  // Important: This must be called on the input of both Try*() functions. It
-  // is separated as an optimization to share the loop rather than do it in
-  // both functions.
-  bool MakeAllTermsPositive(CutData* cut);
-
-  // Try to find a cut with a knapsack heuristic.
-  // If this returns true, you can get the cut via cut().
-  bool TrySimpleKnapsack(const CutData& input,
+  // This uses a lifting procedure similar to what is described in "Lifting the
+  // Knapsack Cover Inequalities for the Knapsack Polytope", Adam N. Letchfod,
+  // Georgia Souli. In particular the section "Lifting via mixed-integer
+  // rounding".
+  bool TrySimpleKnapsack(const CutData& input_ct,
                          ImpliedBoundsProcessor* ib_processor = nullptr);
 
   // Applies the lifting procedure described in "On Lifted Cover Inequalities: A
   // New Lifting Procedure with Unusual Properties", Adam N. Letchford, Georgia
-  // Souli.
+  // Souli. This assumes an input with all coefficients positive.
   //
   // The algo is pretty simple, given a cover C for a given rhs. We compute
   // a rational weight p/q so that sum_C min(w_i, p/q) = rhs. Note that q is
@@ -495,10 +576,17 @@ class CoverCutHelper {
   //   f(a) + f(b), so it is always good to use implied bounds of the form X =
   //   bound * B + Slack.
   bool TryWithLetchfordSouliLifting(
-      const CutData& input, ImpliedBoundsProcessor* ib_processor = nullptr);
+      const CutData& input_ct, ImpliedBoundsProcessor* ib_processor = nullptr);
+
+  // It turns out that what FlowCoverCutHelper is doing is really just finding a
+  // cover and generating a cut via coefficient strenghtening instead of MIR
+  // rounding. This more generic version should just always outperform our old
+  // code.
+  bool TrySingleNodeFlow(const CutData& input_ct,
+                         ImpliedBoundsProcessor* ib_processor = nullptr);
 
   // If successful, info about the last generated cut.
-  const LinearConstraint& cut() const { return cut_; }
+  const CutData& cut() const { return cut_; }
 
   // Single line of text that we append to the cut log line.
   std::string Info() const { return absl::StrCat("lift=", num_lifting_); }
@@ -506,12 +594,20 @@ class CoverCutHelper {
   void SetSharedStatistics(SharedStatistics* stats) { shared_stats_ = stats; }
 
  private:
+  void InitializeCut(const CutData& input_ct);
+
   // This looks at base_ct_ and reoder the terms so that the first ones are in
   // the cover. return zero if no interesting cover was found.
-  int GetCoverSize(int relevant_size, IntegerValue* rhs);
+  int GetCoverSizeForBooleans(int relevant_size);
 
-  // Here to reuse memory.
-  CutData base_ct_;
+  template <class CompareAdd, class CompareRemove>
+  int GetCoverSize(int relevant_size);
+
+  template <class Compare>
+  int MinimizeCover(int cover_size, absl::int128 slack);
+
+  // Here to reuse memory, cut_ is both the input and the output.
+  CutData cut_;
   CutData temp_cut_;
   CutDataBuilder cut_builder_;
 
@@ -519,12 +615,20 @@ class CoverCutHelper {
   SharedStatistics* shared_stats_ = nullptr;
   int64_t num_lifting_ = 0;
 
-  int64_t total_num_lifting_ = 0;
-  int64_t total_num_ibs_ = 0;
-  int64_t total_num_overflow_abort_ = 0;
-
-  // Stores the cut for output.
-  LinearConstraint cut_;
+  // Stats for the various type of cuts generated here.
+  struct CutStats {
+    int64_t num_cuts = 0;
+    int64_t num_initial_ibs = 0;
+    int64_t num_lb_ibs = 0;
+    int64_t num_ub_ibs = 0;
+    int64_t num_merges = 0;
+    int64_t num_bumps = 0;
+    int64_t num_lifting = 0;
+    int64_t num_overflow_aborts = 0;
+  };
+  CutStats flow_stats_;
+  CutStats cover_stats_;
+  CutStats ls_stats_;
 };
 
 // A cut generator for z = x * y (x and y >= 0).

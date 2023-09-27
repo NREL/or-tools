@@ -14,10 +14,14 @@
 #include "ortools/sat/intervals.h"
 
 #include <algorithm>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/meta/type_traits.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "ortools/base/logging.h"
@@ -123,6 +127,27 @@ SchedulingConstraintHelper* IntervalsRepository::GetOrCreateHelper(
   helper_repository_[variables] = helper;
   model_->TakeOwnership(helper);
   return helper;
+}
+
+SchedulingDemandHelper* IntervalsRepository::GetOrCreateDemandHelper(
+    SchedulingConstraintHelper* helper,
+    const std::vector<AffineExpression>& demands) {
+  const std::pair<SchedulingConstraintHelper*, std::vector<AffineExpression>>
+      key = {helper, demands};
+  const auto it = demand_helper_repository_.find(key);
+  if (it != demand_helper_repository_.end()) return it->second;
+
+  SchedulingDemandHelper* demand_helper =
+      new SchedulingDemandHelper(demands, helper, model_);
+  model_->TakeOwnership(demand_helper);
+  demand_helper_repository_[key] = demand_helper;
+  return demand_helper;
+}
+
+void IntervalsRepository::InitAllDecomposedEnergies() {
+  for (const auto& it : demand_helper_repository_) {
+    it.second->InitDecomposedEnergies();
+  }
 }
 
 SchedulingConstraintHelper::SchedulingConstraintHelper(int num_tasks,
@@ -679,6 +704,7 @@ SchedulingDemandHelper::SchedulingDemandHelper(
     std::vector<AffineExpression> demands, SchedulingConstraintHelper* helper,
     Model* model)
     : integer_trail_(model->GetOrCreate<IntegerTrail>()),
+      product_decomposer_(model->GetOrCreate<ProductDecomposer>()),
       sat_solver_(model->GetOrCreate<SatSolver>()),
       assignment_(model->GetOrCreate<SatSolver>()->Assignment()),
       demands_(std::move(demands)),
@@ -690,12 +716,19 @@ SchedulingDemandHelper::SchedulingDemandHelper(
   cached_energies_max_.resize(num_tasks, kMaxIntegerValue);
   energy_is_quadratic_.resize(num_tasks, false);
 
+  // We try to init decomposed energies. This is needed for the cuts that are
+  // created after we call InitAllDecomposedEnergies().
+  InitDecomposedEnergies();
+}
+
+void SchedulingDemandHelper::InitDecomposedEnergies() {
   // For the special case were demands is empty.
+  const int num_tasks = helper_->NumTasks();
   if (demands_.size() != num_tasks) return;
   for (int t = 0; t < num_tasks; ++t) {
-    const AffineExpression size = helper->Sizes()[t];
+    const AffineExpression size = helper_->Sizes()[t];
     const AffineExpression demand = demands_[t];
-    decomposed_energies_[t] = TryToDecomposeProduct(size, demand, model);
+    decomposed_energies_[t] = product_decomposer_->TryToDecompose(size, demand);
   }
 }
 
@@ -771,7 +804,7 @@ void SchedulingDemandHelper::CacheAllEnergyValues() {
         !integer_trail_->IsFixed(demands_[t]) && !helper_->SizeIsFixed(t);
     cached_energies_max_[t] = std::min(
         {SimpleEnergyMax(t), LinearEnergyMax(t), DecomposedEnergyMax(t)});
-    CHECK_NE(cached_energies_min_[t], kMaxIntegerValue);
+    CHECK_NE(cached_energies_max_[t], kMaxIntegerValue);
   }
 }
 

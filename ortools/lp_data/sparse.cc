@@ -14,6 +14,7 @@
 #include "ortools/lp_data/sparse.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <initializer_list>
 #include <string>
 #include <utility>
@@ -491,7 +492,7 @@ void CompactSparseMatrix::PopulateFromTranspose(
   num_rows_ = ColToRowIndex(input.num_cols());
 
   // Fill the starts_ vector by computing the number of entries of each rows and
-  // then doing a cummulative sum. After this step starts_[col + 1] will be the
+  // then doing a cumulative sum. After this step starts_[col + 1] will be the
   // actual start of the column col when we are done.
   starts_.assign(num_cols_ + 2, EntryIndex(0));
   for (const RowIndex row : input.rows_) {

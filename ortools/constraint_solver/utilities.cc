@@ -20,9 +20,9 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "ortools/base/hash.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/map_util.h"
+#include "ortools/base/types.h"
 #include "ortools/constraint_solver/constraint_solver.h"
 #include "ortools/constraint_solver/constraint_solveri.h"
 #include "ortools/util/bitset.h"
@@ -283,7 +283,7 @@ bool UnsortedNullableRevBitset::RevAnd(Solver* const solver,
         }
       }
     } else {
-      // Zero the word as the mask is implicitely null.
+      // Zero the word as the mask is implicitly null.
       changed = true;
       bits_.SetValue(solver, index, 0);
       to_remove_.push_back(index);

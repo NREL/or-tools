@@ -63,7 +63,7 @@ if(BUILD_ZLIB)
   FetchContent_Declare(
     zlib
     GIT_REPOSITORY "https://github.com/madler/ZLIB.git"
-    GIT_TAG "v1.2.11"
+    GIT_TAG "v1.2.13"
     PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/ZLIB.patch")
   FetchContent_MakeAvailable(zlib)
   list(POP_BACK CMAKE_MESSAGE_INDENT)
@@ -82,8 +82,8 @@ if(BUILD_absl)
   FetchContent_Declare(
     absl
     GIT_REPOSITORY "https://github.com/abseil/abseil-cpp.git"
-    GIT_TAG "20230125.0"
-    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/abseil-cpp-20230125.0.patch"
+    GIT_TAG "20230125.3"
+    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/abseil-cpp-20230125.3.patch"
   )
   FetchContent_MakeAvailable(absl)
   list(POP_BACK CMAKE_MESSAGE_INDENT)
@@ -103,9 +103,9 @@ if(BUILD_Protobuf)
   FetchContent_Declare(
     protobuf
     GIT_REPOSITORY "https://github.com/protocolbuffers/protobuf.git"
-    GIT_TAG "v21.12"
+    GIT_TAG "v23.3"
     GIT_SUBMODULES ""
-    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/protobuf-v21.12.patch")
+    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/protobuf-v23.3.patch")
   FetchContent_MakeAvailable(protobuf)
   list(POP_BACK CMAKE_MESSAGE_INDENT)
   message(CHECK_PASS "fetched")
@@ -121,8 +121,8 @@ if(BUILD_re2)
   FetchContent_Declare(
     re2
     GIT_REPOSITORY "https://github.com/google/re2.git"
-    GIT_TAG "2022-04-01"
-    #PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/re2-2022-04-01.patch"
+    GIT_TAG "2023-07-01"
+    #PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/re2-2023-07-01.patch"
   )
   FetchContent_MakeAvailable(re2)
   list(POP_BACK CMAKE_MESSAGE_INDENT)
@@ -164,12 +164,27 @@ if(BUILD_PYTHON AND BUILD_pybind11)
     pybind11
     GIT_REPOSITORY "https://github.com/pybind/pybind11.git"
     GIT_TAG "v2.10.3"
-    #PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/pybind11-2.10.3.patch"
+    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/pybind11.patch"
   )
   FetchContent_MakeAvailable(pybind11)
   list(POP_BACK CMAKE_MESSAGE_INDENT)
   message(CHECK_PASS "fetched")
 endif()
+
+if(BUILD_PYTHON AND BUILD_pybind11_protobuf)
+  message(CHECK_START "Fetching pybind11_protobuf")
+  list(APPEND CMAKE_MESSAGE_INDENT "  ")
+  FetchContent_Declare(
+    pybind11_protobuf
+    GIT_REPOSITORY "https://github.com/pybind/pybind11_protobuf.git"
+    GIT_TAG "main"
+    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_LIST_DIR}/../../patches/pybind11_protobuf.patch"
+  )
+  FetchContent_MakeAvailable(pybind11_protobuf)
+  list(POP_BACK CMAKE_MESSAGE_INDENT)
+  message(CHECK_PASS "fetched")
+endif()
+
 
 # ##############################################################################
 # GLPK
@@ -336,13 +351,15 @@ endif()
 ###############
 ##  TESTING  ##
 ###############
-if(BUILD_TESTING)
-  if(BUILD_googletest)
-    FetchContent_Declare(
-      googletest
-      GIT_REPOSITORY https://github.com/google/googletest.git
-      GIT_TAG main)
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-  endif()
+if(BUILD_googletest)
+  message(CHECK_START "Fetching googletest")
+  list(APPEND CMAKE_MESSAGE_INDENT "  ")
+  FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.13.0)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+  list(POP_BACK CMAKE_MESSAGE_INDENT)
+  message(CHECK_PASS "fetched")
 endif()

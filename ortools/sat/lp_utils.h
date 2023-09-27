@@ -103,7 +103,7 @@ bool MPModelProtoValidationBeforeConversion(const SatParameters& params,
 
 // To satisfy our scaling requirements, any terms that is almost zero can just
 // be set to zero. We need to do that before operations like
-// DetectImpliedIntegers(), becauses really low coefficients can cause issues
+// DetectImpliedIntegers(), because really low coefficients can cause issues
 // and might lead to less detection.
 void RemoveNearZeroTerms(const SatParameters& params, MPModelProto* mp_model,
                          SolverLogger* logger);
@@ -166,7 +166,7 @@ bool ScaleAndSetObjective(const SatParameters& params,
 double ComputeTrueObjectiveLowerBound(
     const CpModelProto& model_proto_with_floating_point_objective,
     const CpObjectiveProto& integer_objective,
-    const int64_t inner_integer_objective_lower_bound);
+    int64_t inner_integer_objective_lower_bound);
 
 // Converts an integer program with only binary variables to a Boolean
 // optimization problem. Returns false if the problem didn't contains only

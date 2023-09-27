@@ -88,7 +88,9 @@ proto_library(
     deps = [
         "//ortools/glop:parameters_proto",
         "//ortools/gscip:gscip_proto",
+        "//ortools/math_opt/solvers:glpk_proto",
         "//ortools/math_opt/solvers:gurobi_proto",
+        "//ortools/math_opt/solvers:highs_proto",
         "//ortools/sat:sat_parameters_proto",
         "@com_google_protobuf//:duration_proto",
     ],
@@ -108,6 +110,7 @@ proto_library(
     deps = [
         ":solution_proto",
         "//ortools/gscip:gscip_proto",
+        "//ortools/pdlp:solve_log_proto",
         "@com_google_protobuf//:duration_proto",
     ],
 )
@@ -147,4 +150,15 @@ cc_proto_library(
     deps = [
         ":sparse_containers_proto",
     ],
+)
+
+cc_proto_library(
+    name = "infeasible_subsystem_cc_proto",
+    deps = [":infeasible_subsystem_proto"],
+)
+
+proto_library(
+    name = "infeasible_subsystem_proto",
+    srcs = ["infeasible_subsystem.proto"],
+    deps = [":result_proto"],
 )

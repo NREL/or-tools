@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "ortools/base/hash.h"
@@ -214,7 +215,8 @@ class SatSolver {
   // If ASSUMPTIONS_UNSAT is returned, it is possible to get a "core" of unsat
   // assumptions by calling GetLastIncompatibleDecisions().
   Status ResetAndSolveWithGivenAssumptions(
-      const std::vector<Literal>& assumptions);
+      const std::vector<Literal>& assumptions,
+      int64_t max_number_of_conflicts = -1);
 
   // Changes the assumption level. All the decisions below this level will be
   // treated as assumptions by the next Solve(). Note that this may impact some
@@ -374,7 +376,7 @@ class SatSolver {
   void ClearNewlyAddedBinaryClauses();
 
   struct Decision {
-    Decision() {}
+    Decision() = default;
     Decision(int i, Literal l) : trail_index(i), literal(l) {}
     int trail_index = 0;
     Literal literal;
@@ -467,6 +469,9 @@ class SatSolver {
     return trail_->Index();
   }
 
+  // Hack to allow to temporarily disable logging if it is enabled.
+  SolverLogger* mutable_logger() { return logger_; }
+
  private:
   // Calls Propagate() and returns true if no conflict occurred. Otherwise,
   // learns the conflict, backtracks, enqueues the consequence of the learned
@@ -477,7 +482,7 @@ class SatSolver {
   bool PropagateAndStopAfterOneConflictResolution();
 
   // All Solve() functions end up calling this one.
-  Status SolveInternal(TimeLimit* time_limit);
+  Status SolveInternal(TimeLimit* time_limit, int64_t max_number_of_conflicts);
 
   // Adds a binary clause to the BinaryImplicationGraph and to the
   // BinaryClauseManager when track_binary_clauses_ is true.
@@ -492,7 +497,7 @@ class SatSolver {
   bool ClauseIsValidUnderDebugAssignment(
       const std::vector<Literal>& clause) const;
   bool PBConstraintIsValidUnderDebugAssignment(
-      const std::vector<LiteralWithCoeff>& cst, const Coefficient rhs) const;
+      const std::vector<LiteralWithCoeff>& cst, Coefficient rhs) const;
 
   // Logs the given status if parameters_.log_search_progress() is true.
   // Also returns it.

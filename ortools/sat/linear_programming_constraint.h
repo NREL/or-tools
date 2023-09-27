@@ -23,11 +23,16 @@
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/numeric/int128.h"
+#include "absl/types/span.h"
 #include "ortools/base/strong_vector.h"
+#include "ortools/glop/parameters.pb.h"
 #include "ortools/glop/revised_simplex.h"
+#include "ortools/glop/variables_info.h"
 #include "ortools/lp_data/lp_data.h"
 #include "ortools/lp_data/lp_data_utils.h"
 #include "ortools/lp_data/lp_types.h"
+#include "ortools/sat/cp_model.pb.h"
 #include "ortools/sat/cuts.h"
 #include "ortools/sat/implied_bounds.h"
 #include "ortools/sat/integer.h"
@@ -46,19 +51,6 @@
 
 namespace operations_research {
 namespace sat {
-
-// Stores for each IntegerVariable its temporary LP solution.
-//
-// This is shared between all LinearProgrammingConstraint because in the corner
-// case where we have many different LinearProgrammingConstraint and a lot of
-// variable, we could theoretically use up a quadratic amount of memory
-// otherwise.
-//
-// TODO(user): find a better way?
-struct LinearProgrammingConstraintLpSolution
-    : public absl::StrongVector<IntegerVariable, double> {
-  LinearProgrammingConstraintLpSolution() = default;
-};
 
 // Helper struct to combine info generated from solving LP.
 struct LPSolveInfo {
@@ -79,7 +71,10 @@ class ScatteredIntegerVector {
   bool Add(glop::ColIndex col, IntegerValue value);
 
   // Similar to Add() but for multiplier * terms.
-  // Returns false in case of overflow.
+  //
+  // Returns false if we encountered any integer overflow. If the template bool
+  // is false, we do not check for a bit of extra speed.
+  template <bool check_overflow = true>
   bool AddLinearExpressionMultiple(
       IntegerValue multiplier,
       const std::vector<std::pair<glop::ColIndex, IntegerValue>>& terms);
@@ -93,6 +88,11 @@ class ScatteredIntegerVector {
   void ConvertToLinearConstraint(
       const std::vector<IntegerVariable>& integer_variables,
       IntegerValue upper_bound, LinearConstraint* result);
+
+  void ConvertToCutData(absl::int128 rhs,
+                        const std::vector<IntegerVariable>& integer_variables,
+                        const std::vector<double>& lp_solution,
+                        IntegerTrail* integer_trail, CutData* result);
 
   // Similar to ConvertToLinearConstraint().
   std::vector<std::pair<glop::ColIndex, IntegerValue>> GetTerms();
@@ -197,7 +197,7 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // TODO(user): This fixes to 1, but for some problems fixing to 0
   // or to the std::round(support value) might work better. When this is the
   // case, change behaviour automatically?
-  std::function<IntegerLiteral()> HeuristicLpMostInfeasibleBinary(Model* model);
+  std::function<IntegerLiteral()> HeuristicLpMostInfeasibleBinary();
 
   // Returns a IntegerLiteral guided by the underlying LP constraints.
   //
@@ -216,7 +216,7 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // does BFS. This might depend on the model, more trials are necessary. We
   // could also do exponential smoothing instead of decaying every N calls, i.e.
   // pseudo = a * pseudo + (1-a) reduced.
-  std::function<IntegerLiteral()> HeuristicLpReducedCostBinary(Model* model);
+  std::function<IntegerLiteral()> HeuristicLpReducedCostBinary();
 
   // Returns a IntegerLiteral guided by the underlying LP constraints.
   //
@@ -238,12 +238,13 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   std::string Statistics() const;
 
   // Important: this is only temporarily valid.
-  IntegerSumLE* LatestOptimalConstraintOrNull() const {
+  IntegerSumLE128* LatestOptimalConstraintOrNull() const {
     if (optimal_constraints_.empty()) return nullptr;
     return optimal_constraints_.back().get();
   }
 
-  const std::vector<std::unique_ptr<IntegerSumLE>>& OptimalConstraints() const {
+  const std::vector<std::unique_ptr<IntegerSumLE128>>& OptimalConstraints()
+      const {
     return optimal_constraints_;
   }
 
@@ -273,14 +274,9 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // Analyzes the result of an LP Solution. Returns false on conflict.
   bool AnalyzeLp();
 
-  // Returns false if some terms cannot be removed because of overflow. If this
-  // happends the cut is left in a non-usable state and we should abort its
-  // processing.
-  bool RemoveFixedTerms(LinearConstraint* cut);
-
   // Does some basic preprocessing of a cut candidate. Returns false if we
   // should abort processing this candidate.
-  bool PreprocessCut(LinearConstraint* cut);
+  bool PreprocessCut(IntegerVariable first_slack, CutData* cut);
 
   // Add a "MIR" cut obtained by first taking the linear combination of the
   // row of the matrix according to "integer_multipliers" and then trying
@@ -294,8 +290,7 @@ class LinearProgrammingConstraint : public PropagatorInterface,
 
   // Second half of AddCutFromConstraints().
   bool PostprocessAndAddCut(const std::string& name, const std::string& info,
-                            IntegerVariable first_slack,
-                            const LinearConstraint& cut);
+                            IntegerVariable first_slack, const CutData& cut);
 
   // Computes and adds the corresponding type of cuts.
   // This can currently only be called at the root node.
@@ -327,15 +322,25 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // Note that this will loose some precision, but our subsequent computation
   // will still be exact as it will work for any set of multiplier.
   std::vector<std::pair<glop::RowIndex, IntegerValue>> ScaleLpMultiplier(
-      bool take_objective_into_account,
+      bool take_objective_into_account, bool ignore_trivial_constraints,
       const std::vector<std::pair<glop::RowIndex, double>>& lp_multipliers,
-      glop::Fractional* scaling, int max_pow = 62) const;
+      IntegerValue* scaling,
+      int64_t overflow_cap = std::numeric_limits<int64_t>::max()) const;
+
+  // Can we have an overflow if we scale each coefficients with
+  // std::round(std::ldexp(coeff, power)) ?
+  bool ScalingCanOverflow(
+      int power, bool take_objective_into_account,
+      const std::vector<std::pair<glop::RowIndex, double>>& multipliers,
+      int64_t overflow_cap) const;
 
   // Computes from an integer linear combination of the integer rows of the LP a
   // new constraint of the form "sum terms <= upper_bound". All computation are
   // exact here.
   //
-  // Returns false if we encountered any integer overflow.
+  // Returns false if we encountered any integer overflow. If the template bool
+  // is false, we do not check for a bit of extra speed.
+  template <bool check_overflow = true>
   bool ComputeNewLinearConstraint(
       const std::vector<std::pair<glop::RowIndex, IntegerValue>>&
           integer_multipliers,
@@ -360,8 +365,8 @@ class LinearProgrammingConstraint : public PropagatorInterface,
       IntegerValue upper_bound, LinearConstraint* result);
 
   // Compute the implied lower bound of the given linear expression using the
-  // current variable bound. Return kMinIntegerValue in case of overflow.
-  IntegerValue GetImpliedLowerBound(const LinearConstraint& terms) const;
+  // current variable bound.
+  absl::int128 GetImpliedLowerBound(const LinearConstraint& terms) const;
 
   // Fills integer_reason_ with the reason for the implied lower bound of the
   // given linear expression. We relax the reason if we have some slack.
@@ -412,12 +417,17 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // of the LP.
   LinearConstraintManager constraint_manager_;
 
+  // We do not want to add too many cut during each generation round.
+  TopNCuts top_n_cuts_ = TopNCuts(10);
+
   // Initial problem in integer form.
   // We always sort the inner vectors by increasing glop::ColIndex.
   struct LinearConstraintInternal {
     IntegerValue lb;
     IntegerValue ub;
     LinearExpression terms;
+    bool lb_is_trivial = false;
+    bool ub_is_trivial = false;
   };
   LinearExpression integer_objective_;
   IntegerValue integer_objective_offset_ = IntegerValue(0);
@@ -441,6 +451,7 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   FlowCoverCutHelper flow_cover_cut_helper_;
   IntegerRoundingCutHelper integer_rounding_cut_helper_;
 
+  bool problem_proven_infeasible_by_cuts_ = false;
   CutData base_ct_;
   LinearConstraint cut_;
   LinearConstraint saved_cut_;
@@ -481,7 +492,6 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   Model* model_;
   TimeLimit* time_limit_;
   IntegerTrail* integer_trail_;
-  SatSolver* sat_solver_;
   Trail* trail_;
   IntegerEncoder* integer_encoder_;
   ModelRandomGenerator* random_;
@@ -497,13 +507,13 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   std::vector<IntegerLiteral> deductions_;
   std::vector<IntegerLiteral> deductions_reason_;
 
-  // Repository of IntegerSumLE that needs to be kept around for the lazy
+  // Repository of IntegerSumLE128 that needs to be kept around for the lazy
   // reasons. Those are new integer constraint that are created each time we
   // solve the LP to a dual-feasible solution. Propagating these constraints
   // both improve the objective lower bound but also perform reduced cost
   // fixing.
   int rev_optimal_constraints_size_ = 0;
-  std::vector<std::unique_ptr<IntegerSumLE>> optimal_constraints_;
+  std::vector<std::unique_ptr<IntegerSumLE128>> optimal_constraints_;
 
   // Last OPTIMAL solution found by a call to the underlying LP solver.
   // On IncrementalPropagate(), if the bound updates do not invalidate this
@@ -524,8 +534,8 @@ class LinearProgrammingConstraint : public PropagatorInterface,
   // and no lazy constraints where added.
   bool lp_at_level_zero_is_final_ = false;
 
-  // Same as lp_solution_ but this vector is indexed differently.
-  LinearProgrammingConstraintLpSolution& expanded_lp_solution_;
+  // Same as lp_solution_ but this vector is indexed by IntegerVariable.
+  ModelLpValues& expanded_lp_solution_;
 
   // Linear constraints cannot be created or modified after this is registered.
   bool lp_constraint_is_registered_ = false;
@@ -561,10 +571,16 @@ class LinearProgrammingConstraint : public PropagatorInterface,
 
   // As we form candidate form cuts, sometimes we can propagate level zero
   // bounds with them.
+  FirstFewValues<10> reachable_;
   int64_t total_num_cut_propagations_ = 0;
+  int64_t total_num_eq_propagations_ = 0;
 
   // Some stats on the LP statuses encountered.
   int64_t num_solves_ = 0;
+  mutable int64_t num_adjusts_ = 0;
+  mutable int64_t num_cut_overflows_ = 0;
+  mutable int64_t num_bad_cuts_ = 0;
+  mutable int64_t num_scaling_issues_ = 0;
   std::vector<int64_t> num_solves_by_status_;
 };
 
@@ -593,17 +609,6 @@ class LinearProgrammingConstraintCollection
         });
   }
 };
-
-// Tests for possible overflow in the propagation of the given linear
-// constraint.
-bool PossibleOverflow(const IntegerTrail& integer_trail,
-                      const LinearConstraint& constraint);
-
-// Reduce the coefficient of the constraint so that we cannot have overflow
-// in the propagation of the given linear constraint. Note that we may loose
-// some strength by doing so.
-void PreventOverflow(const IntegerTrail& integer_trail,
-                     LinearConstraint* constraint);
 
 }  // namespace sat
 }  // namespace operations_research

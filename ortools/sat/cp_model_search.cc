@@ -24,6 +24,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
 #include "absl/random/distributions.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -134,7 +135,7 @@ BooleanOrIntegerLiteral CpModelView::MedianValue(int var) const {
     // 5 values -> returns the second.
     // 4 values -> returns the second too.
     // Array is 0 based.
-    const int target = (encoding.size() + 1) / 2 - 1;
+    const int target = (static_cast<int>(encoding.size()) + 1) / 2 - 1;
     result.boolean_literal_index = encoding[target].literal.Index();
   }
   return result;
@@ -163,11 +164,14 @@ void AddDualSchedulingHeuristics(SatParameters& new_params) {
   new_params.set_use_overload_checker_in_cumulative(true);
   new_params.set_use_strong_propagation_in_disjunctive(true);
   new_params.set_use_timetable_edge_finding_in_cumulative(true);
+  new_params.set_use_pairwise_reasoning_in_no_overlap_2d(true);
+  new_params.set_use_timetabling_in_no_overlap_2d(true);
+  new_params.set_use_energetic_reasoning_in_no_overlap_2d(true);
 }
 
 }  // namespace
 
-const std::function<BooleanOrIntegerLiteral()> ConstructSearchStrategyInternal(
+std::function<BooleanOrIntegerLiteral()> ConstructSearchStrategyInternal(
     const std::vector<DecisionStrategyProto>& strategies, Model* model) {
   const auto& view = *model->GetOrCreate<CpModelView>();
   const auto& parameters = *model->GetOrCreate<SatParameters>();
@@ -262,7 +266,8 @@ const std::function<BooleanOrIntegerLiteral()> ConstructSearchStrategyInternal(
         active_refs.erase(std::remove_if(active_refs.begin(), active_refs.end(),
                                          is_above_tolerance),
                           active_refs.end());
-        const int winner = absl::Uniform<int>(*random, 0, active_refs.size());
+        const int winner =
+            absl::Uniform(*random, 0, static_cast<int>(active_refs.size()));
         candidate = active_refs[winner].ref;
       }
 
@@ -413,8 +418,6 @@ std::function<BooleanOrIntegerLiteral()> InstrumentSearchStrategy(
   };
 }
 
-namespace {
-
 // This generates a valid random seed (base_seed + delta) without overflow.
 // We assume |delta| is small.
 int ValidSumSeed(int base_seed, int delta) {
@@ -427,19 +430,8 @@ int ValidSumSeed(int base_seed, int delta) {
   return static_cast<int>(result);
 }
 
-}  // namespace
-
-// Note: in flatzinc setting, we know we always have a fixed search defined.
-//
-// Things to try:
-//   - Specialize for purely boolean problems
-//   - Disable linearization_level options for non linear problems
-//   - Fast restart in randomized search
-//   - Different propatation levels for scheduling constraints
-std::vector<SatParameters> GetDiverseSetOfParameters(
-    const SatParameters& base_params, const CpModelProto& cp_model) {
-  // Defines a set of named strategies so it is easier to read in one place
-  // the one that are used. See below.
+absl::flat_hash_map<std::string, SatParameters> GetNamedParameters(
+    const SatParameters& base_params) {
   absl::flat_hash_map<std::string, SatParameters> strategies;
 
   // The "default" name can be used for the base_params unchanged.
@@ -532,6 +524,19 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
 
   {
     SatParameters new_params = base_params;
+    new_params.set_linearization_level(2);
+    new_params.set_use_objective_shaving_search(true);
+    new_params.set_cp_model_presolve(true);
+    new_params.set_cp_model_probing_level(0);
+    new_params.set_symmetry_level(0);
+    if (base_params.use_dual_scheduling_heuristics()) {
+      AddDualSchedulingHeuristics(new_params);
+    }
+    strategies["objective_shaving_search"] = new_params;
+  }
+
+  {
+    SatParameters new_params = base_params;
     new_params.set_search_branching(SatParameters::AUTOMATIC_SEARCH);
     new_params.set_use_probing_search(true);
     if (base_params.use_dual_scheduling_heuristics()) {
@@ -596,9 +601,26 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
   }
 
   // Add user defined ones.
+  // Note that this might overwrite our default ones.
   for (const SatParameters& params : base_params.subsolver_params()) {
     strategies[params.name()] = params;
   }
+
+  return strategies;
+}
+
+// Note: in flatzinc setting, we know we always have a fixed search defined.
+//
+// Things to try:
+//   - Specialize for purely boolean problems
+//   - Disable linearization_level options for non linear problems
+//   - Fast restart in randomized search
+//   - Different propatation levels for scheduling constraints
+std::vector<SatParameters> GetDiverseSetOfParameters(
+    const SatParameters& base_params, const CpModelProto& cp_model) {
+  // Defines a set of named strategies so it is easier to read in one place
+  // the one that are used. See below.
+  const auto strategies = GetNamedParameters(base_params);
 
   // We only use a "fixed search" worker if some strategy is specified or
   // if we have a scheduling model.
@@ -615,6 +637,13 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
   // like if there is no lp, or everything is already linearized at level 1.
   std::vector<std::string> names;
 
+  // Starts by adding user specified ones.
+  for (const std::string& name : base_params.extra_subsolvers()) {
+    names.push_back(name);
+  }
+
+  const int num_workers_to_generate =
+      base_params.num_workers() - base_params.shared_tree_num_workers();
   // We use the default if empty.
   if (base_params.subsolvers().empty()) {
     names.push_back("default_lp");
@@ -634,15 +663,15 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
     // Do not add objective_lb_search if core is active and num_workers <= 16.
     if (cp_model.has_objective() &&
         (cp_model.objective().vars().size() == 1 ||  // core is not active
-         base_params.num_workers() > 16)) {
+         num_workers_to_generate > 16)) {
       names.push_back("objective_lb_search");
     }
     names.push_back("probing");
-    if (base_params.num_workers() >= 20) {
+    if (num_workers_to_generate >= 20) {
       names.push_back("probing_max_lp");
     }
-    if (base_params.num_workers() >= 24) {
-      names.push_back("objective_lb_search_max_lp");
+    if (num_workers_to_generate >= 24) {
+      names.push_back("objective_shaving_search");
     }
 #if !defined(__PORTABLE_PLATFORM__) && defined(USE_SCIP)
     if (absl::GetFlag(FLAGS_cp_model_use_max_hs)) names.push_back("max_hs");
@@ -664,11 +693,6 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
     }
   }
 
-  // Add subsolvers.
-  for (const std::string& name : base_params.extra_subsolvers()) {
-    names.push_back(name);
-  }
-
   // Remove the names that should be ignored.
   absl::flat_hash_set<std::string> to_ignore;
   for (const std::string& name : base_params.ignore_subsolvers()) {
@@ -684,12 +708,6 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
   // Creates the diverse set of parameters with names and seed.
   std::vector<SatParameters> result;
   for (const std::string& name : names) {
-    if (!strategies.contains(name)) {
-      // TODO(user): Check that at parameter validation and return nice error
-      // instead.
-      LOG(WARNING) << "Unknown parameter name '" << name << "'";
-      continue;
-    }
     SatParameters params = strategies.at(name);
 
     // Do some filtering.
@@ -715,7 +733,7 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
 
       if (name == "less_encoding") continue;
 
-      // Disable subsolvers that do not implement the determistic mode.
+      // Disable subsolvers that do not implement the deterministic mode.
       //
       // TODO(user): Enable lb_tree_search in deterministic mode.
       if (params.interleave_search() &&
@@ -728,6 +746,7 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
       if (params.optimize_with_lb_tree_search()) continue;
       if (params.optimize_with_core()) continue;
       if (params.use_objective_lb_search()) continue;
+      if (params.use_objective_shaving_search()) continue;
       if (params.search_branching() == SatParameters::LP_SEARCH) continue;
       if (params.search_branching() == SatParameters::PSEUDO_COST_SEARCH) {
         continue;
@@ -739,16 +758,17 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
     // TODO(user): Find a better randomization for the seed so that changing
     // random_seed() has more impact?
     params.set_name(name);
-    params.set_random_seed(
-        ValidSumSeed(base_params.random_seed(), result.size() + 1));
+    params.set_random_seed(ValidSumSeed(base_params.random_seed(),
+                                        static_cast<int>(result.size()) + 1));
     result.push_back(params);
   }
 
   if (cp_model.has_objective() && !cp_model.objective().vars().empty()) {
     // If there is an objective, the extra workers will use LNS.
     // Make sure we have at least min_num_lns_workers() of them.
-    const int target = std::max(
-        1, base_params.num_workers() - base_params.min_num_lns_workers());
+    const int target =
+        std::max(base_params.shared_tree_num_workers() > 0 ? 0 : 1,
+                 num_workers_to_generate - base_params.min_num_lns_workers());
     if (!base_params.interleave_search() && result.size() > target) {
       result.resize(target);
     }
@@ -758,7 +778,7 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
     const bool need_extra_workers =
         !base_params.interleave_search() &&
         (base_params.use_rins_lns() || base_params.use_feasibility_pump());
-    int target = base_params.num_workers();
+    int target = num_workers_to_generate;
     if (need_extra_workers && target > 4) {
       if (target <= 8) {
         target -= 1;
@@ -798,7 +818,7 @@ std::vector<SatParameters> GetFirstSolutionParams(
       new_params.set_randomize_search(true);
       new_params.set_search_randomization_tolerance(num_random + 1);
       new_params.set_random_seed(ValidSumSeed(base_seed, 2 * num_random + 1));
-      new_params.set_name(absl::StrCat("random_", num_random));
+      new_params.set_name("random");
       num_random++;
     } else {  // Random quick restart.
       new_params.set_search_branching(
@@ -806,7 +826,7 @@ std::vector<SatParameters> GetFirstSolutionParams(
       new_params.set_randomize_search(true);
       new_params.set_search_randomization_tolerance(num_random_qr + 1);
       new_params.set_random_seed(ValidSumSeed(base_seed, 2 * num_random_qr));
-      new_params.set_name(absl::StrCat("random_quick_restart_", num_random_qr));
+      new_params.set_name("random_quick_restart");
       num_random_qr++;
     }
     result.push_back(new_params);
@@ -814,5 +834,38 @@ std::vector<SatParameters> GetFirstSolutionParams(
   return result;
 }
 
+std::vector<SatParameters> GetWorkSharingParams(
+    const SatParameters& base_params, const CpModelProto& cp_model,
+    int num_params_to_generate) {
+  std::vector<SatParameters> result;
+  // TODO(user): We could support assumptions, it's just not implemented.
+  if (!cp_model.assumptions().empty()) return result;
+  if (num_params_to_generate <= 0) return result;
+  int num_workers = 0;
+  while (result.size() < num_params_to_generate) {
+    // TODO(user): Make the base parameters configurable.
+    SatParameters new_params = base_params;
+    std::string name = "shared_";
+    const int base_seed = base_params.random_seed();
+    new_params.set_random_seed(ValidSumSeed(base_seed, 2 * num_workers + 1));
+    new_params.set_search_branching(SatParameters::AUTOMATIC_SEARCH);
+    new_params.set_use_shared_tree_search(true);
+
+    // These settings don't make sense with shared tree search, turn them off as
+    // they can break things.
+    new_params.set_optimize_with_core(false);
+    new_params.set_optimize_with_lb_tree_search(false);
+    new_params.set_optimize_with_max_hs(false);
+
+    std::string lp_tags[] = {"no", "default", "max"};
+    absl::StrAppend(&name,
+                    lp_tags[std::min(new_params.linearization_level(), 2)],
+                    "_lp_", num_workers);
+    new_params.set_name(name);
+    num_workers++;
+    result.push_back(new_params);
+  }
+  return result;
+}
 }  // namespace sat
 }  // namespace operations_research

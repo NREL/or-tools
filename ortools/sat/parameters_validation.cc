@@ -13,11 +13,15 @@
 
 #include "ortools/sat/parameters_validation.h"
 
-#include <string>
-#include <vector>
+#include <stdint.h>
 
-#include "absl/container/flat_hash_set.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <string>
+
 #include "absl/strings/str_cat.h"
+#include "ortools/sat/cp_model_search.h"
 #include "ortools/sat/sat_parameters.pb.h"
 
 namespace operations_research {
@@ -85,28 +89,49 @@ std::string ValidateParameters(const SatParameters& params) {
   TEST_IS_FINITE(mip_check_precision);
   TEST_IS_FINITE(mip_max_valid_magnitude);
   TEST_IS_FINITE(mip_drop_tolerance);
+  TEST_IS_FINITE(shared_tree_worker_objective_split_probability);
 
   TEST_NOT_NAN(max_time_in_seconds);
   TEST_NOT_NAN(max_deterministic_time);
+
+  // Parallelism.
+  const int kMaxReasonableParallelism = 1'000'000;
+  TEST_IN_RANGE(num_workers, 0, kMaxReasonableParallelism);
+  TEST_IN_RANGE(num_search_workers, 0, kMaxReasonableParallelism);
+  TEST_IN_RANGE(min_num_lns_workers, 0, kMaxReasonableParallelism);
+  TEST_IN_RANGE(shared_tree_num_workers, 0, kMaxReasonableParallelism);
+  TEST_IN_RANGE(interleave_batch_size, 0, kMaxReasonableParallelism);
 
   // TODO(user): Consider using annotations directly in the proto for these
   // validation. It is however not open sourced.
   TEST_IN_RANGE(mip_max_activity_exponent, 1, 62);
   TEST_IN_RANGE(mip_max_bound, 0, 1e17);
   TEST_IN_RANGE(solution_pool_size, 1, std::numeric_limits<int32_t>::max());
+  TEST_IN_RANGE(shared_tree_worker_objective_split_probability, 0.0, 1.0);
+
+  // Feasibility jump.
+  TEST_NOT_NAN(feasibility_jump_decay);
+  TEST_NOT_NAN(feasibility_jump_var_randomization_probability);
+  TEST_NOT_NAN(feasibility_jump_var_perburbation_range_ratio);
+  TEST_IN_RANGE(feasibility_jump_max_num_values_scanned, 2, 1'000'000'000);
+  TEST_IN_RANGE(feasibility_jump_decay, 0.0, 1.0);
+  TEST_IN_RANGE(feasibility_jump_var_randomization_probability, 0.0, 1.0);
+  TEST_IN_RANGE(feasibility_jump_var_perburbation_range_ratio, 0.0, 1.0);
+
+  // Violation ls.
+  TEST_IN_RANGE(num_violation_ls, 0, kMaxReasonableParallelism);
+  TEST_IN_RANGE(violation_ls_perturbation_period, 1, 1'000'000'000);
 
   TEST_POSITIVE(glucose_decay_increment_period);
+  TEST_POSITIVE(shared_tree_max_nodes_per_worker);
 
   TEST_NON_NEGATIVE(mip_wanted_precision);
   TEST_NON_NEGATIVE(max_time_in_seconds);
   TEST_NON_NEGATIVE(max_deterministic_time);
   TEST_NON_NEGATIVE(new_constraints_batch_size);
-  TEST_NON_NEGATIVE(num_workers);
-  TEST_NON_NEGATIVE(num_search_workers);
-  TEST_NON_NEGATIVE(min_num_lns_workers);
-  TEST_NON_NEGATIVE(interleave_batch_size);
   TEST_NON_NEGATIVE(probing_deterministic_time_limit);
   TEST_NON_NEGATIVE(presolve_probing_deterministic_time_limit);
+  TEST_NON_NEGATIVE(linearization_level);
 
   if (params.enumerate_all_solutions() &&
       (params.num_search_workers() > 1 || params.num_workers() > 1)) {
@@ -123,56 +148,44 @@ std::string ValidateParameters(const SatParameters& params) {
     return "Do not specify both num_search_workers and num_workers";
   }
 
+  if (params.has_shared_tree_num_workers() &&
+      static_cast<int64_t>(params.shared_tree_num_workers()) +
+              static_cast<int64_t>(params.min_num_lns_workers()) >
+          std::max<int64_t>(params.num_workers(),
+                            params.num_search_workers())) {
+    return "Cannot have more shared tree + lns workers than total workers";
+  }
+
+  if (params.use_shared_tree_search()) {
+    return "use_shared_tree_search must only be set on workers' parameters";
+  }
+
   if (params.enumerate_all_solutions() && params.interleave_search()) {
     return "Enumerating all solutions does not work with interleaved search";
   }
 
-  absl::flat_hash_set<std::string> valid_subsolvers({
-      "auto",
-      "core_default_lp",
-      "core_max_lp",
-      "core_or_no_lp",
-      "core",
-      "default_lp",
-      "default",
-      "fixed",
-      "lb_tree_search",
-      "less_encoding",
-      "max_hs",
-      "max_lp",
-      "no_lp",
-      "objective_lb_search_max_lp",
-      "objective_lb_search_no_lp",
-      "objective_lb_search",
-      "probing_max_lp",
-      "probing_no_lp",
-      "probing",
-      "quick_restart_max_lp",
-      "quick_restart_no_lp",
-      "quick_restart",
-      "reduced_costs",
-  });
   for (const SatParameters& new_subsolver : params.subsolver_params()) {
     if (new_subsolver.name().empty()) {
       return "New subsolver parameter defined without a name";
     }
-    valid_subsolvers.insert(new_subsolver.name());
   }
 
+  const auto strategies = GetNamedParameters(params);
   for (const std::string& subsolver : params.subsolvers()) {
-    if (!valid_subsolvers.contains(subsolver)) {
+    if (subsolver == "core_or_no_lp") continue;  // Used by fz free search.
+    if (!strategies.contains(subsolver)) {
       return absl::StrCat("subsolver \'", subsolver, "\' is not valid");
     }
   }
 
   for (const std::string& subsolver : params.extra_subsolvers()) {
-    if (!valid_subsolvers.contains(subsolver)) {
+    if (!strategies.contains(subsolver)) {
       return absl::StrCat("subsolver \'", subsolver, "\' is not valid");
     }
   }
 
   for (const std::string& subsolver : params.ignore_subsolvers()) {
-    if (!valid_subsolvers.contains(subsolver)) {
+    if (!strategies.contains(subsolver)) {
       return absl::StrCat("subsolver \'", subsolver, "\' is not valid");
     }
   }

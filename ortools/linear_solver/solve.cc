@@ -49,11 +49,10 @@
 //       --dump_response=/tmp/foo.response \
 //       2>/tmp/foo.err
 
-#include <algorithm>
 #include <cstdio>
+#include <iostream>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/status/status.h"
@@ -61,11 +60,9 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "absl/time/time.h"
-#include "ortools/base/commandlineflags.h"
 #include "ortools/base/file.h"
 #include "ortools/base/helpers.h"
 #include "ortools/base/init_google.h"
-#include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/options.h"
 #include "ortools/linear_solver/linear_solver.h"
@@ -116,6 +113,8 @@ ABSL_FLAG(std::string, sol_file, "",
           "If non-empty, output the best solution in Miplib .sol format.");
 
 ABSL_DECLARE_FLAG(bool, verify_solution);  // Defined in ./linear_solver.cc
+ABSL_DECLARE_FLAG(bool,
+                  log_verification_errors);  // Defined in ./linear_solver.cc
 ABSL_DECLARE_FLAG(
     bool,
     linear_solver_enable_verbose_output);  // Defined in ./linear_solver.cc
@@ -133,11 +132,15 @@ MPModelRequest ReadMipModel(const std::string& input) {
   MPModelRequest request_proto;
   MPModelProto model_proto;
   if (absl::EndsWith(input, ".lp")) {
+#if defined(USE_LP_PARSER)
     std::string data;
     CHECK_OK(file::GetContents(input, &data, file::Defaults()));
     absl::StatusOr<MPModelProto> result = ModelProtoFromLpFormat(data);
     CHECK_OK(result);
     model_proto = std::move(result).value();
+#else   // !defined(USE_LP_PARSER)
+    LOG(FATAL) << "Support for parsing LP format is not compiled in.";
+#endif  // !defined(USE_LP_PARSER)
   } else if (absl::EndsWith(input, ".mps") ||
              absl::EndsWith(input, ".mps.gz")) {
     QCHECK_OK(glop::MPSReader().ParseFile(input, &model_proto))
@@ -235,10 +238,12 @@ MPSolutionResponse LocalSolve(const MPModelRequest& request_proto) {
   // a verification step here.
   if ((status == MPSolver::OPTIMAL || status == MPSolver::FEASIBLE) &&
       !absl::GetFlag(FLAGS_verify_solution)) {
-    LOG(INFO) << "Verifying the solution";
-    solver.VerifySolution(/*tolerance=*/MPSolverParameters().GetDoubleParam(
-                              MPSolverParameters::PRIMAL_TOLERANCE),
-                          /*log_errors=*/true);
+    const bool verified =
+        solver.VerifySolution(/*tolerance=*/MPSolverParameters().GetDoubleParam(
+                                  MPSolverParameters::PRIMAL_TOLERANCE),
+                              absl::GetFlag(FLAGS_log_verification_errors));
+    LOG(INFO) << "The solution "
+              << (verified ? "was verified." : "didn't pass verification.");
   }
 
   // If the solver is a MIP, print the number of nodes.
@@ -267,7 +272,7 @@ void Run() {
   if (!absl::GetFlag(FLAGS_sol_hint).empty()) {
     const auto read_sol =
         ParseSolFile(absl::GetFlag(FLAGS_sol_hint), request_proto.model());
-    CHECK(read_sol.ok());
+    CHECK_OK(read_sol.status());
     const MPSolutionResponse sol = read_sol.value();
     if (request_proto.model().has_solution_hint()) {
       LOG(WARNING) << "Overwriting solution hint found in the request with "

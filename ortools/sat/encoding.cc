@@ -13,15 +13,20 @@
 
 #include "ortools/sat/encoding.h"
 
+#include <stddef.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <queue>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "ortools/base/logging.h"
+#include "absl/log/check.h"
+#include "absl/strings/str_cat.h"
+#include "ortools/base/stl_util.h"
 #include "ortools/sat/boolean_problem.pb.h"
 #include "ortools/sat/pb_constraint.h"
 #include "ortools/sat/sat_base.h"
@@ -32,18 +37,42 @@
 namespace operations_research {
 namespace sat {
 
-EncodingNode::EncodingNode(Literal l)
-    : for_sorting_(l.Variable()), literals_(1, l) {}
+EncodingNode EncodingNode::ConstantNode(Coefficient weight) {
+  EncodingNode node;
+  node.lb_ = 1;
+  node.ub_ = 1;
+  node.weight_lb_ = 0;
+  node.weight_ = weight;
+  return node;
+}
 
-EncodingNode::EncodingNode(int lb, int ub,
-                           std::function<Literal(int x)> create_lit)
-    : lb_(lb), ub_(ub), create_lit_(create_lit) {
-  CHECK_LT(lb, ub);
-  literals_.push_back(create_lit(lb));
+EncodingNode EncodingNode::LiteralNode(Literal l, Coefficient weight) {
+  EncodingNode node;
+  node.lb_ = 0;
+  node.weight_lb_ = 0;
+  node.ub_ = 1;
+  node.weight_ = weight;
+  node.for_sorting_ = l.Variable();
+  node.literals_ = {l};
+  return node;
+}
+
+EncodingNode EncodingNode::GenericNode(int lb, int ub,
+                                       std::function<Literal(int x)> create_lit,
+                                       Coefficient weight) {
+  EncodingNode node;
+  node.lb_ = lb;
+  node.ub_ = ub;
+  node.weight_lb_ = 0;
+  node.create_lit_ = std::move(create_lit);
+  node.weight_ = weight;
+
+  node.literals_.push_back(node.create_lit_(lb));
 
   // TODO(user): Not ideal, we should probably just provide index in the
   // original objective for sorting purpose.
-  for_sorting_ = literals_[0].Variable();
+  node.for_sorting_ = node.literals_[0].Variable();
+  return node;
 }
 
 void EncodingNode::InitializeFullNode(int n, EncodingNode* a, EncodingNode* b,
@@ -64,6 +93,33 @@ void EncodingNode::InitializeFullNode(int n, EncodingNode* a, EncodingNode* b,
   child_a_ = a;
   child_b_ = b;
   for_sorting_ = first_var_index;
+}
+
+void EncodingNode::InitializeAmoNode(absl::Span<EncodingNode* const> nodes,
+                                     SatSolver* solver) {
+  CHECK_GE(nodes.size(), 2);
+  CHECK(literals_.empty()) << "Already initialized";
+  const BooleanVariable var = solver->NewBooleanVariable();
+  const Literal new_literal(var, true);
+  literals_.push_back(new_literal);
+  child_a_ = nullptr;
+  child_b_ = nullptr;
+  lb_ = 0;
+  ub_ = 1;
+  depth_ = 0;
+  for_sorting_ = var;
+  std::vector<Literal> clause{new_literal.Negated()};
+  for (const EncodingNode* node : nodes) {
+    // node_lit => new_lit.
+    clause.push_back(node->literals_[0]);
+    solver->AddBinaryClause(node->literals_[0].Negated(), new_literal);
+    depth_ = std::max(node->depth_ + 1, depth_);
+    for_sorting_ = std::min(for_sorting_, node->for_sorting_);
+  }
+
+  // If new_literal is true then one of the lit must be true.
+  // Note that this is not needed for correctness though.
+  solver->AddProblemClause(clause);
 }
 
 void EncodingNode::InitializeLazyNode(EncodingNode* a, EncodingNode* b,
@@ -114,17 +170,19 @@ bool EncodingNode::IncreaseCurrentUB(SatSolver* solver) {
 }
 
 Coefficient EncodingNode::Reduce(const SatSolver& solver) {
-  int i = 0;
-  while (i < literals_.size() &&
-         solver.Assignment().LiteralIsTrue(literals_[i])) {
-    ++i;
-    ++lb_;
-  }
-  literals_.erase(literals_.begin(), literals_.begin() + i);
-  while (!literals_.empty() &&
-         solver.Assignment().LiteralIsFalse(literals_.back())) {
-    literals_.pop_back();
-    ub_ = lb_ + literals_.size();
+  if (!literals_.empty()) {
+    int i = 0;
+    while (i < literals_.size() &&
+           solver.Assignment().LiteralIsTrue(literals_[i])) {
+      ++i;
+      ++lb_;
+    }
+    literals_.erase(literals_.begin(), literals_.begin() + i);
+    while (!literals_.empty() &&
+           solver.Assignment().LiteralIsFalse(literals_.back())) {
+      literals_.pop_back();
+      ub_ = lb_ + literals_.size();
+    }
   }
 
   if (weight_lb_ >= lb_) return Coefficient(0);
@@ -136,14 +194,35 @@ Coefficient EncodingNode::Reduce(const SatSolver& solver) {
 void EncodingNode::ApplyWeightUpperBound(Coefficient gap, SatSolver* solver) {
   CHECK_GT(weight_, 0);
   const Coefficient num_allowed = (gap / weight_);
-  const Coefficient new_size =
-      std::max(Coefficient(0), Coefficient(weight_lb_ - lb_) + num_allowed);
+  if (num_allowed > std::numeric_limits<int>::max() / 2) return;
+  const int new_size =
+      std::max(0, (weight_lb_ - lb_) + static_cast<int>(num_allowed.value()));
   if (size() <= new_size) return;
-  for (int i = new_size.value(); i < size(); ++i) {
+  for (int i = new_size; i < size(); ++i) {
     solver->AddUnitClause(literal(i).Negated());
   }
-  literals_.resize(new_size.value());
-  ub_ = lb_ + literals_.size();
+  literals_.resize(new_size);
+  ub_ = lb_ + new_size;
+}
+
+void EncodingNode::TransformToBoolean(SatSolver* solver) {
+  if (size() > 1) {
+    for (int i = 1; i < size(); ++i) {
+      solver->AddUnitClause(literal(i).Negated());
+    }
+    literals_.resize(1);
+    ub_ = lb_ + 1;
+    return;
+  }
+
+  if (current_ub() == ub_) return;
+
+  // TODO(user): Avoid creating a Boolean just to fix it!
+  IncreaseNodeSize(this, solver);
+  CHECK_EQ(size(), 2);
+  solver->AddUnitClause(literal(1).Negated());
+  literals_.resize(1);
+  ub_ = lb_ + 1;
 }
 
 bool EncodingNode::AssumptionIs(Literal other) const {
@@ -406,56 +485,6 @@ EncodingNode* LazyMergeAllNodeWithPQAndIncreaseLb(
   return n;
 }
 
-std::vector<EncodingNode*> CreateInitialEncodingNodes(
-    const std::vector<Literal>& literals,
-    const std::vector<Coefficient>& coeffs, Coefficient* offset,
-    std::deque<EncodingNode>* repository) {
-  CHECK_EQ(literals.size(), coeffs.size());
-  *offset = 0;
-  std::vector<EncodingNode*> nodes;
-  for (int i = 0; i < literals.size(); ++i) {
-    // We want to maximize the cost when this literal is true.
-    if (coeffs[i] > 0) {
-      repository->emplace_back(literals[i]);
-      nodes.push_back(&repository->back());
-      nodes.back()->set_weight(coeffs[i]);
-    } else {
-      repository->emplace_back(literals[i].Negated());
-      nodes.push_back(&repository->back());
-      nodes.back()->set_weight(-coeffs[i]);
-
-      // Note that this increase the offset since the coeff is negative.
-      *offset -= coeffs[i];
-    }
-  }
-  return nodes;
-}
-
-std::vector<EncodingNode*> CreateInitialEncodingNodes(
-    const LinearObjective& objective_proto, Coefficient* offset,
-    std::deque<EncodingNode>* repository) {
-  *offset = 0;
-  std::vector<EncodingNode*> nodes;
-  for (int i = 0; i < objective_proto.literals_size(); ++i) {
-    const Literal literal(objective_proto.literals(i));
-
-    // We want to maximize the cost when this literal is true.
-    if (objective_proto.coefficients(i) > 0) {
-      repository->emplace_back(literal);
-      nodes.push_back(&repository->back());
-      nodes.back()->set_weight(Coefficient(objective_proto.coefficients(i)));
-    } else {
-      repository->emplace_back(literal.Negated());
-      nodes.push_back(&repository->back());
-      nodes.back()->set_weight(Coefficient(-objective_proto.coefficients(i)));
-
-      // Note that this increase the offset since the coeff is negative.
-      *offset -= objective_proto.coefficients(i);
-    }
-  }
-  return nodes;
-}
-
 namespace {
 
 bool EncodingNodeByWeight(const EncodingNode* a, const EncodingNode* b) {
@@ -468,10 +497,8 @@ bool EncodingNodeByDepth(const EncodingNode* a, const EncodingNode* b) {
 
 }  // namespace
 
-std::vector<Literal> ReduceNodesAndExtractAssumptions(
-    Coefficient upper_bound, Coefficient stratified_lower_bound,
-    Coefficient* lower_bound, std::vector<EncodingNode*>* nodes,
-    SatSolver* solver) {
+void ReduceNodes(Coefficient upper_bound, Coefficient* lower_bound,
+                 std::vector<EncodingNode*>* nodes, SatSolver* solver) {
   // Remove the left-most variables fixed to one from each node.
   // Also update the lower_bound. Note that Reduce() needs the solver to be
   // at the root node in order to work.
@@ -484,7 +511,10 @@ std::vector<Literal> ReduceNodesAndExtractAssumptions(
   // If we closed the problem, we abort and return and empty vector.
   if (upper_bound != kCoefficientMax) {
     const Coefficient gap = upper_bound - *lower_bound;
-    if (gap < 0) return {};
+    if (gap < 0) {
+      nodes->clear();
+      return;
+    }
     for (EncodingNode* n : *nodes) {
       n->ApplyWeightUpperBound(gap, solver);
     }
@@ -511,10 +541,14 @@ std::vector<Literal> ReduceNodesAndExtractAssumptions(
     // weird behavior, since we will reverse the nodes at each iteration...
     std::reverse(nodes->begin(), nodes->end());
   }
+}
 
+std::vector<Literal> ExtractAssumptions(Coefficient stratified_lower_bound,
+                                        const std::vector<EncodingNode*>& nodes,
+                                        SatSolver* solver) {
   // Extract the assumptions from the nodes.
   std::vector<Literal> assumptions;
-  for (EncodingNode* n : *nodes) {
+  for (EncodingNode* n : nodes) {
     if (n->weight() >= stratified_lower_bound) {
       assumptions.push_back(n->GetAssumption(solver));
     }
@@ -548,121 +582,210 @@ Coefficient MaxNodeWeightSmallerThan(const std::vector<EncodingNode*>& nodes,
   return result;
 }
 
-bool ProcessCore(const std::vector<Literal>& core, Coefficient min_weight,
-                 std::deque<EncodingNode>* repository,
-                 std::vector<EncodingNode*>* nodes, SatSolver* solver) {
+bool ObjectiveEncoder::ProcessCore(const std::vector<Literal>& core,
+                                   Coefficient min_weight, Coefficient gap,
+                                   std::string* info) {
   // Backtrack to be able to add new constraints.
-  solver->ResetToLevelZero();
+  if (!sat_solver_->ResetToLevelZero()) return false;
   if (core.size() == 1) {
-    return solver->AddUnitClause(core[0].Negated());
+    return sat_solver_->AddUnitClause(core[0].Negated());
   }
 
-  // Remove from nodes the EncodingNode in the core, merge them, and add the
-  // resulting EncodingNode at the back.
-  int index = 0;
-  int new_node_index = 0;
+  // Remove from nodes the EncodingNode in the core and put them in to_merge.
   std::vector<EncodingNode*> to_merge;
-  for (int i = 0; i < core.size(); ++i) {
-    // Since the nodes appear in order in the core, we can find the
-    // relevant "objective" variable efficiently with a simple linear scan
-    // in the nodes vector (done with index).
-    for (; !(*nodes)[index]->AssumptionIs(core[i]); ++index) {
-      CHECK_LT(index, nodes->size());
-      (*nodes)[new_node_index] = (*nodes)[index];
-      ++new_node_index;
+  {
+    int index = 0;
+    std::vector<EncodingNode*> new_nodes;
+    for (int i = 0; i < core.size(); ++i) {
+      // Since the nodes appear in order in the core, we can find the
+      // relevant "objective" variable efficiently with a simple linear scan
+      // in the nodes vector (done with index).
+      for (; !nodes_[index]->AssumptionIs(core[i]); ++index) {
+        CHECK_LT(index, nodes_.size());
+        new_nodes.push_back(nodes_[index]);
+      }
+      CHECK_LT(index, nodes_.size());
+      EncodingNode* node = nodes_[index];
+
+      // TODO(user): propagate proper ub first.
+      if (alternative_encoding_ && node->ub() > node->lb() + 1) {
+        // We can distinguish the first literal of the node.
+        // By not counting its weight in node, and creating a new node for it.
+        node->IncreaseWeightLb();
+        new_nodes.push_back(node);
+
+        // Now keep processing with this new node instead.
+        repository_.push_back(
+            EncodingNode::LiteralNode(core[i].Negated(), node->weight()));
+        repository_.back().set_depth(node->depth());
+        node = &repository_.back();
+      }
+
+      to_merge.push_back(node);
+
+      // Special case if the weight > min_weight. we keep it, but reduce its
+      // cost. This is the same "trick" as in WPM1 used to deal with weight.
+      // We basically split a clause with a larger weight in two identical
+      // clauses, one with weight min_weight that will be merged and one with
+      // the remaining weight.
+      if (node->weight() > min_weight) {
+        node->set_weight(node->weight() - min_weight);
+        new_nodes.push_back(node);
+      }
+      ++index;
     }
-    CHECK_LT(index, nodes->size());
-    to_merge.push_back((*nodes)[index]);
-
-    // Special case if the weight > min_weight. we keep it, but reduce its
-    // cost. This is the same "trick" as in WPM1 used to deal with weight.
-    // We basically split a clause with a larger weight in two identical
-    // clauses, one with weight min_weight that will be merged and one with
-    // the remaining weight.
-    if ((*nodes)[index]->weight() > min_weight) {
-      (*nodes)[index]->set_weight((*nodes)[index]->weight() - min_weight);
-      (*nodes)[new_node_index] = (*nodes)[index];
-      ++new_node_index;
+    for (; index < nodes_.size(); ++index) {
+      new_nodes.push_back(nodes_[index]);
     }
-    ++index;
-  }
-  for (; index < nodes->size(); ++index) {
-    (*nodes)[new_node_index] = (*nodes)[index];
-    ++new_node_index;
-  }
-  nodes->resize(new_node_index);
-  nodes->push_back(LazyMergeAllNodeWithPQAndIncreaseLb(min_weight, to_merge,
-                                                       solver, repository));
-  return !solver->ModelIsUnsat();
-}
-
-bool ProcessCoreWithAlternativeEncoding(const std::vector<Literal>& core,
-                                        Coefficient min_weight,
-                                        std::deque<EncodingNode>* repository,
-                                        std::vector<EncodingNode*>* nodes,
-                                        SatSolver* solver) {
-  // Backtrack to be able to add new constraints.
-  solver->ResetToLevelZero();
-
-  if (core.size() == 1) {
-    return solver->AddUnitClause(core[0].Negated());
+    nodes_ = new_nodes;
   }
 
-  std::vector<EncodingNode*> new_nodes;
-  std::vector<EncodingNode*> to_merge;
+  // Are the literal in amo relationship?
+  // - If min_weight is large enough, we can infer that.
+  // - If the size is small we can infer this via propagation.
+  bool in_exactly_one = (2 * min_weight) > gap;
 
-  // Preconditions.
-  for (EncodingNode* n : *nodes) {
-    CHECK_GT(n->size(), 0);
-  }
+  // Amongst the node to merge, if many are boolean nodes in an "at most one"
+  // relationship, it is super advantageous to exploit it during merging as we
+  // can regroup all nodes from an at most one in a single new node with a depth
+  // of 1.
+  if (!in_exactly_one) {
+    // Collect "boolean nodes".
+    std::vector<Literal> bool_nodes;
+    absl::flat_hash_map<LiteralIndex, int> node_indices;
+    for (int i = 0; i < to_merge.size(); ++i) {
+      const EncodingNode& node = *to_merge[i];
 
-  // Remove from nodes the EncodingNode in the core, merge them, and add the
-  // resulting EncodingNode at the back.
-  int index = 0;
-  for (int i = 0; i < core.size(); ++i) {
-    // Since the nodes appear in order in the core, we can find the
-    // relevant "objective" variable efficiently with a simple linear scan
-    // in the nodes vector (done with index).
-    CHECK_LT(index, nodes->size());
-    for (; !(*nodes)[index]->AssumptionIs(core[i]); ++index) {
-      CHECK_LT(index, nodes->size());
-      new_nodes.push_back((*nodes)[index]);
-    }
-    CHECK_LT(index, nodes->size());
-
-    // We have a node from the core.
-    // We will distinguish its first literal.
-    EncodingNode* n = (*nodes)[index];
-    const Literal lit = core[i].Negated();
-    n->IncreaseWeightLb();
-    ++index;
-    CHECK_GT(n->size(), 0);
-
-    // TODO(user): For node with same depth, the sorting order is not the same
-    // if we create a new node or reuse one. Experiment what is the best order.
-    repository->emplace_back(lit);
-    EncodingNode* new_bool_node = &repository->back();
-    new_bool_node->set_depth(n->depth());
-    CHECK_GT(new_bool_node->size(), 0);
-    to_merge.push_back(new_bool_node);
-    if (n->weight() > min_weight) {
-      new_bool_node->set_weight(n->weight() - min_weight);
-      new_nodes.push_back(new_bool_node);
+      if (node.size() != 1) continue;
+      if (node.ub() != node.lb() + 1) continue;
+      if (node.weight_lb() != node.lb()) continue;
+      if (node_indices.contains(node.literal(0).Index())) continue;
+      node_indices[node.literal(0).Index()] = i;
+      bool_nodes.push_back(node.literal(0));
     }
 
-    if (!n->HasNoWeight()) {
-      new_nodes.push_back(n);
+    // For "small" core, with O(n) full propagation, we can discover possible
+    // at most ones. This is a bit costly but can significantly reduce the
+    // number of Booleans needed and has a good positive impact.
+    std::vector<int> buffer;
+    std::vector<absl::Span<const Literal>> decomposition;
+    if (bool_nodes.size() < 300 && bool_nodes.size() > 1) {
+      const auto& assignment = sat_solver_->Assignment();
+      const int size = bool_nodes.size();
+      std::vector<std::vector<int>> graph(size);
+      for (int i = 0; i < size; ++i) {
+        if (!sat_solver_->ResetToLevelZero()) return false;
+        if (!sat_solver_->EnqueueDecisionIfNotConflicting(bool_nodes[i])) {
+          // TODO(user): this node is closed and can be removed from the core.
+          continue;
+        }
+        for (int j = 0; j < size; ++j) {
+          if (i == j) continue;
+          if (assignment.LiteralIsFalse(bool_nodes[j])) {
+            graph[i].push_back(j);
+
+            // Unit propagation is not always symmetric.
+            graph[j].push_back(i);
+          }
+
+          // TODO(user): If assignment.LiteralIsTrue(bool_nodes[j]) We can
+          // minimize the core here by removing bool_nodes[i] from it. Note
+          // however that since we already minimized the core, this is
+          // unlikely to happen.
+        }
+      }
+      if (!sat_solver_->ResetToLevelZero()) return false;
+
+      for (std::vector<int>& adj : graph) {
+        gtl::STLSortAndRemoveDuplicates(&adj);
+      }
+      const std::vector<absl::Span<int>> index_decompo =
+          AtMostOneDecomposition(graph, *random_, &buffer);
+
+      // Convert.
+      std::vector<Literal> new_order;
+      for (const int i : buffer) new_order.push_back(bool_nodes[i]);
+      bool_nodes = new_order;
+      for (const auto span : index_decompo) {
+        if (span.size() == 1) continue;
+        decomposition.push_back(absl::MakeSpan(
+            bool_nodes.data() + (span.data() - buffer.data()), span.size()));
+      }
+    } else {
+      decomposition = implications_->HeuristicAmoPartition(&bool_nodes);
+    }
+
+    // Same case as above, all the nodes in the core are in a exactly_one.
+    if (decomposition.size() == 1 && decomposition[0].size() == core.size()) {
+      in_exactly_one = true;
+    }
+
+    int num_in_decompo = 0;
+    if (!in_exactly_one) {
+      for (const auto amo : decomposition) {
+        num_in_decompo += amo.size();
+
+        // Extract Amo nodes and set them to nullptr in to_merge.
+        std::vector<EncodingNode*> amo_nodes;
+        for (const Literal l : amo) {
+          const int index = node_indices.at(l.Index());
+          amo_nodes.push_back(to_merge[index]);
+          to_merge[index] = nullptr;
+        }
+
+        // Create the new node with proper constraints and weight.
+        repository_.push_back(EncodingNode());
+        EncodingNode* n = &repository_.back();
+        n->InitializeAmoNode(amo_nodes, sat_solver_);
+        n->set_weight(min_weight);
+        to_merge.push_back(n);
+      }
+      if (num_in_decompo > 0) {
+        absl::StrAppend(info, " amo:", decomposition.size(),
+                        " lit:", num_in_decompo);
+      }
+
+      // Clean-up to_merge.
+      int new_size = 0;
+      for (EncodingNode* node : to_merge) {
+        if (node == nullptr) continue;
+        to_merge[new_size++] = node;
+      }
+      to_merge.resize(new_size);
     }
   }
 
-  for (; index < nodes->size(); ++index) {
-    new_nodes.push_back((*nodes)[index]);
+  // If all the literal of the core are in at_most_one, the core is actually an
+  // exactly_one. We just subtracted the min_cost above. We just have to enqueue
+  // a constant node with min_weight for the rest of the code to work.
+  if (in_exactly_one) {
+    // Tricky: We need to enforce an upper bound of 1 on the nodes.
+    for (EncodingNode* node : to_merge) {
+      node->TransformToBoolean(sat_solver_);
+    }
+
+    absl::StrAppend(info, " exo");
+    repository_.push_back(EncodingNode::ConstantNode(min_weight));
+    nodes_.push_back(&repository_.back());
+
+    // The negation of the literal in the core are in exactly one.
+    // TODO(user): If we infered the exactly one from the binary implication
+    // graph, there is no need to add the amo since it is already there.
+    std::vector<LiteralWithCoeff> cst;
+    cst.reserve(core.size());
+    for (const Literal l : core) {
+      cst.emplace_back(l.Negated(), Coefficient(1));
+    }
+    sat_solver_->AddLinearConstraint(
+        /*use_lower_bound=*/true, Coefficient(1),
+        /*use_upper_bound=*/true, Coefficient(1), &cst);
+    return !sat_solver_->ModelIsUnsat();
   }
 
-  new_nodes.push_back(LazyMergeAllNodeWithPQAndIncreaseLb(min_weight, to_merge,
-                                                          solver, repository));
-  *nodes = new_nodes;
-  return !solver->ModelIsUnsat();
+  nodes_.push_back(LazyMergeAllNodeWithPQAndIncreaseLb(
+      min_weight, to_merge, sat_solver_, &repository_));
+  absl::StrAppend(info, " d:", nodes_.back()->depth());
+  return !sat_solver_->ModelIsUnsat();
 }
 
 }  // namespace sat

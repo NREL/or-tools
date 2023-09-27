@@ -19,10 +19,12 @@
 
 #include <functional>
 #include <iostream>
+#include <ostream>
 #include <string>
 #include <vector>
 
 #include "absl/strings/string_view.h"
+#include "google/protobuf/repeated_ptr_field.h"
 #include "ortools/base/source_location.h"
 
 namespace operations_research::math_opt {
@@ -48,6 +50,27 @@ using MessageCallback = std::function<void(const std::vector<std::string>&)>;
 //   args.message_callback = PrinterMessageCallback(std::cerr, "solver logs> ");
 MessageCallback PrinterMessageCallback(std::ostream& output_stream = std::cout,
                                        absl::string_view prefix = "");
+
+// Returns a message callback function that aggregates all messages in the
+// provided vector.
+//
+// Usage:
+//
+//   std::vector<std::string> msgs;
+//   SolveArguments args;
+//   args.message_callback = VectorMessageCallback(&msgs);
+MessageCallback VectorMessageCallback(std::vector<std::string>* sink);
+
+// Returns a message callback function that aggregates all messages in the
+// provided RepeatedPtrField.
+//
+// Usage:
+//
+//   google::protobuf::RepeatedPtrField<std::string> msgs;
+//   SolveArguments args;
+//   args.message_callback = RepeatedPtrFieldMessageCallback(&msgs);
+MessageCallback RepeatedPtrFieldMessageCallback(
+    google::protobuf::RepeatedPtrField<std::string>* sink);
 
 }  // namespace operations_research::math_opt
 

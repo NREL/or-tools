@@ -17,6 +17,7 @@
 #include <functional>
 #include <vector>
 
+#include "absl/log/check.h"
 #include "absl/strings/str_join.h"
 #include "ortools/base/logging.h"
 #include "ortools/sat/cumulative_energy.h"
@@ -150,8 +151,8 @@ std::function<void(Model*)> Cumulative(
       helper = intervals->GetOrCreateHelper(vars);
     }
     SchedulingDemandHelper* demands_helper =
-        new SchedulingDemandHelper(demands, helper, model);
-    model->TakeOwnership(demands_helper);
+        model->GetOrCreate<IntervalsRepository>()->GetOrCreateDemandHelper(
+            helper, demands);
 
     // For each variables that is after a subset of task ends (i.e. like a
     // makespan objective), we detect it and add a special constraint to
@@ -198,13 +199,15 @@ std::function<void(Model*)> Cumulative(
       // TODO(user): If more than one variable are after the same set of
       // intervals, we should regroup them in a single constraint rather than
       // having two independent constraint doing the same propagation.
-      std::vector<PrecedencesPropagator::FullIntegerPrecedence>
-          full_precedences;
-      model->GetOrCreate<PrecedencesPropagator>()->ComputeFullPrecedences(
-          !parameters.exploit_all_precedences(), index_to_end_vars,
-          &full_precedences);
-      for (const PrecedencesPropagator::FullIntegerPrecedence& data :
-           full_precedences) {
+      std::vector<FullIntegerPrecedence> full_precedences;
+      if (parameters.exploit_all_precedences()) {
+        model->GetOrCreate<PrecedenceRelations>()->ComputeFullPrecedences(
+            index_to_end_vars, &full_precedences);
+      } else {
+        model->GetOrCreate<PrecedencesPropagator>()->ComputePartialPrecedences(
+            index_to_end_vars, &full_precedences);
+      }
+      for (const FullIntegerPrecedence& data : full_precedences) {
         const int size = data.indices.size();
         if (size <= 1) continue;
 

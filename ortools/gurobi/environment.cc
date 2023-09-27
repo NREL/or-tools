@@ -32,6 +32,7 @@ namespace operations_research {
 bool GurobiIsCorrectlyInstalled() {
   absl::StatusOr<GRBenv*> status = GetGurobiEnv();
   if (!status.ok() || status.value() == nullptr) {
+    LOG(WARNING) << status.status();
     return false;
   }
 
@@ -123,6 +124,7 @@ std::function<int(GRBmodel* model, int* numnzP, int* vbeg, int* vind,
                   double* vval, int start, int len)>
     GRBgetvars = nullptr;
 std::function<int(GRBmodel* model)> GRBoptimize = nullptr;
+std::function<int(GRBmodel* model)> GRBcomputeIIS = nullptr;
 std::function<int(GRBmodel* model, const char* filename)> GRBwrite = nullptr;
 std::function<int(GRBenv* env, GRBmodel** modelP, const char* Pname,
                   int numvars, double* obj, double* lb, double* ub, char* vtype,
@@ -264,6 +266,7 @@ void LoadGurobiFunctions(DynamicLibrary* gurobi_dynamic_library) {
   gurobi_dynamic_library->GetFunction(&GRBcblazy, "GRBcblazy");
   gurobi_dynamic_library->GetFunction(&GRBgetvars, "GRBgetvars");
   gurobi_dynamic_library->GetFunction(&GRBoptimize, "GRBoptimize");
+  gurobi_dynamic_library->GetFunction(&GRBcomputeIIS, "GRBcomputeIIS");
   gurobi_dynamic_library->GetFunction(&GRBwrite, "GRBwrite");
   gurobi_dynamic_library->GetFunction(&GRBnewmodel, "GRBnewmodel");
   gurobi_dynamic_library->GetFunction(&GRBaddvar, "GRBaddvar");
@@ -352,6 +355,7 @@ std::vector<std::string> GurobiDynamicLibraryPotentialPaths() {
                                            ".dll"));
     potential_paths.push_back(absl::StrCat(
         "C:\\gurobi", version, "\\win64\\bin\\gurobi", lib, ".dll"));
+    potential_paths.push_back(absl::StrCat("gurobi", lib, ".dll"));
 #elif defined(__APPLE__)  // OS X
     potential_paths.push_back(absl::StrCat(
         "/Library/gurobi", version, "/mac64/lib/libgurobi", lib, ".dylib"));

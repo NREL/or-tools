@@ -84,8 +84,13 @@ else()
   endforeach()
 endif()
 
-if(BUILD_SHARED_LIBS AND MSVC)
-  set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+if(MSVC)
+  if(NOT BUILD_SHARED_LIBS)
+    # With CMake 3.27+ ZERO_CHECK target will create a cyclic dependencies error.
+    set(CMAKE_SUPPRESS_REGENERATION TRUE)
+  else()
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  endif()
 endif()
 
 # Disable CTest targets
@@ -174,6 +179,14 @@ if(BUILD_LP_PARSER)
   CMAKE_DEPENDENT_OPTION(BUILD_re2 "Build the re2 dependency Library" OFF
     "NOT BUILD_DEPS" ON)
   message(STATUS "Build re2: ${BUILD_re2}")
+endif()
+
+if(BUILD_TESTING)
+  CMAKE_DEPENDENT_OPTION(BUILD_googletest "Build googletest" OFF
+    "NOT BUILD_DEPS" ON)
+  message(STATUS "Build googletest: ${BUILD_googletest}")
+else()
+  set(BUILD_googletest OFF)
 endif()
 
 # Optional third party solvers (enabled by default)
@@ -274,7 +287,7 @@ if(BUILD_DOTNET)
   message(STATUS ".Net C# language version: ${DOTNET_LANG}")
 
   set(DOTNET_SAMPLE_LANG "8.0" CACHE STRING "Specify the C# language version for samples (default \"8.0\")")
-  message(STATUS ".Net C# language version: ${DOTNET_SAMPLE_LANG}")
+  message(STATUS ".Net Samples C# language version: ${DOTNET_SAMPLE_LANG}")
 
   # Targeted Framework Moniker
   # see: https://docs.microsoft.com/en-us/dotnet/standard/frameworks
@@ -331,7 +344,11 @@ if(BUILD_PYTHON)
     "NOT BUILD_DEPS" ON)
   message(STATUS "Python: Build pybind11: ${BUILD_pybind11}")
 
-  CMAKE_DEPENDENT_OPTION(BUILD_PYTHON_DOC "Build the Python doc" OFF "NOT BUILD_DOC" ON)
+  CMAKE_DEPENDENT_OPTION(BUILD_pybind11_protobuf "Build the pybind11_protobuf dependency Library" OFF
+    "NOT BUILD_DEPS" ON)
+  message(STATUS "Python: Build pybind11_protobuf: ${BUILD_pybind11_protobuf}")
+
+CMAKE_DEPENDENT_OPTION(BUILD_PYTHON_DOC "Build the Python doc" OFF "NOT BUILD_DOC" ON)
   message(STATUS "Python: Build doc: ${BUILD_PYTHON_DOC}")
 
   CMAKE_DEPENDENT_OPTION(BUILD_VENV "Create Python venv in BINARY_DIR/python/venv" OFF

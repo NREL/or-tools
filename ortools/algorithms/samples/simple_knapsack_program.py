@@ -15,35 +15,37 @@
 # [START program]
 """A simple knapsack problem."""
 # [START import]
-from ortools.algorithms import pywrapknapsack_solver
+from ortools.algorithms.python import knapsack_solver
 # [END import]
 
 
 def main():
     # Create the solver.
     # [START solver]
-    solver = pywrapknapsack_solver.KnapsackSolver(
-        pywrapknapsack_solver.KnapsackSolver.
-        KNAPSACK_DYNAMIC_PROGRAMMING_SOLVER, "test")
+    solver = knapsack_solver.KnapsackSolver(
+        knapsack_solver.SolverType.KNAPSACK_DYNAMIC_PROGRAMMING_SOLVER,
+        "test",
+    )
     # [END solver]
 
     # [START data]
-    weights = [[
-        565, 406, 194, 130, 435, 367, 230, 315, 393, 125, 670, 892, 600, 293,
-        712, 147, 421, 255
-    ]]
+    weights = [
+        # fmt:off
+      [565, 406, 194, 130, 435, 367, 230, 315, 393, 125, 670, 892, 600, 293, 712, 147, 421, 255],
+        # fmt:on
+    ]
     capacities = [850]
     values = weights[0]
     # [END data]
 
     # [START solve]
-    solver.Init(values, weights, capacities)
-    computed_value = solver.Solve()
+    solver.init(values, weights, capacities)
+    computed_value = solver.solve()
     # [END solve]
 
     # [START print_solution]
     packed_items = [
-        x for x in range(0, len(weights[0])) if solver.BestSolutionContains(x)
+        x for x in range(0, len(weights[0])) if solver.best_solution_contains(x)
     ]
     packed_weights = [weights[0][i] for i in packed_items]
 

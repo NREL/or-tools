@@ -25,8 +25,6 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
-#include "google/protobuf/map.h"
-#include "ortools/base/status_macros.h"
 #include "ortools/gscip/gscip.h"
 #include "ortools/gscip/gscip.pb.h"
 #include "ortools/gscip/gscip_event_handler.h"
@@ -35,6 +33,7 @@
 #include "ortools/math_opt/core/inverted_bounds.h"
 #include "ortools/math_opt/core/solve_interrupter.h"
 #include "ortools/math_opt/core/solver_interface.h"
+#include "ortools/math_opt/infeasible_subsystem.pb.h"
 #include "ortools/math_opt/model.pb.h"
 #include "ortools/math_opt/model_parameters.pb.h"
 #include "ortools/math_opt/model_update.pb.h"
@@ -59,6 +58,9 @@ class GScipSolver : public SolverInterface {
       const CallbackRegistrationProto& callback_registration, Callback cb,
       SolveInterrupter* interrupter) override;
   absl::StatusOr<bool> Update(const ModelUpdateProto& model_update) override;
+  absl::StatusOr<InfeasibleSubsystemResultProto> InfeasibleSubsystem(
+      const SolveParametersProto& parameters, MessageCallback message_cb,
+      SolveInterrupter* interrupter) override;
 
   // Returns the merged parameters and a list of warnings for unsupported
   // parameters.
@@ -142,7 +144,7 @@ class GScipSolver : public SolverInterface {
   // Updates the existing constraints and the coefficients of the existing
   // variables of these constraints.
   absl::Status UpdateLinearConstraints(
-      const LinearConstraintUpdatesProto linear_constraint_updates,
+      LinearConstraintUpdatesProto linear_constraint_updates,
       const SparseDoubleMatrixProto& linear_constraint_matrix,
       std::optional<int64_t> first_new_var_id,
       std::optional<int64_t> first_new_cstr_id);
@@ -187,6 +189,9 @@ class GScipSolver : public SolverInterface {
 
   // Returns the indicator constraints with non-binary indicator variables.
   InvalidIndicators ListInvalidIndicators() const;
+
+  // Registers handlers with SCIP (e.g. event handlers, constraint handlers).
+  absl::Status RegisterHandlers();
 
   const std::unique_ptr<GScip> gscip_;
   InterruptEventHandler interrupt_event_handler_;

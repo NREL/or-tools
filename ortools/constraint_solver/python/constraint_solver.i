@@ -21,15 +21,15 @@
 //
 // USAGE EXAMPLES (most of which are also unit tests):
 // - ./pywrapcp_test.py
-// - examples/python/appointments.py
-// - examples/python/golomb8.py
-// - examples/python/hidato_table.py
-// - examples/python/jobshop_ft06.py
-// - examples/python/magic_sequence_distribute.py
-// - examples/python/rabbit_pheasant.py
-// - examples/python/simple_meeting.py
-// - examples/python/sudoku.py
-// - examples/python/zebra.py
+// - ortools/python/appointments.py
+// - ortools/python/golomb8.py
+// - ortools/python/hidato_table.py
+// - ortools/python/jobshop_ft06.py
+// - ortools/python/magic_sequence_distribute.py
+// - ortools/python/rabbit_pheasant.py
+// - ortools/python/simple_meeting.py
+// - ortools/python/sudoku.py
+// - ortools/python/zebra.py
 
 %include "ortools/base/base.i"
 %include "ortools/util/python/proto.i"
@@ -112,8 +112,7 @@ PY_CONVERT_HELPER_PTR(SequenceVar);
 PY_CONVERT_HELPER_PTR(LocalSearchOperator);
 PY_CONVERT_HELPER_PTR(LocalSearchFilter);
 PY_CONVERT_HELPER_PTR(LocalSearchFilterManager);
-PY_CONVERT_HELPER_INTEXPR_OR_INTVAR(IntVar);
-PY_CONVERT_HELPER_INTEXPR_OR_INTVAR(IntExpr);
+PY_CONVERT_HELPER_INTEXPR_AND_INTVAR();
 
 // Actual conversions. This also includes the conversion to std::vector<Class>.
 PY_CONVERT(IntVar);
@@ -691,7 +690,7 @@ PROTECT_FROM_FAILURE(IntervalVar::SetEndMax(int64_t m), arg1->solver());
 PROTECT_FROM_FAILURE(IntervalVar::SetEndRange(int64_t mi, int64_t ma),
                      arg1->solver());
 PROTECT_FROM_FAILURE(IntervalVar::SetPerformed(bool val), arg1->solver());
-PROTECT_FROM_FAILURE(Solver::AddConstraint(Constraint* const c), arg1);
+PROTECT_FROM_FAILURE(Solver::AddConstraint(Constraint* c), arg1);
 PROTECT_FROM_FAILURE(Solver::Fail(), arg1);
 }  // namespace operations_research
 #undef PROTECT_FROM_FAILURE
@@ -928,7 +927,7 @@ namespace operations_research {
 // See the occurrences of "DecisionBuilder*" in this file.
 %unignore Solver::Try(const std::vector<DecisionBuilder*>&);
 %unignore Solver::Compose(const std::vector<DecisionBuilder*>&);
-%rename (SolveOnce) Solver::MakeSolveOnce(DecisionBuilder* const,
+%rename (SolveOnce) Solver::MakeSolveOnce(DecisionBuilder*,
                                           const std::vector<SearchMonitor*>&);
 %rename (Phase) Solver::MakePhase(const std::vector<IntVar*>&,
                                   IntVarStrategy, IntValueStrategy);
@@ -1025,6 +1024,8 @@ namespace operations_research {
 %unignore Solver::LE;
 %unignore Solver::EQ;
 
+%unignore Solver::TopProgressPercent;
+
 }  // namespace operations_research
 
 // ============= Unexposed C++ API : Solver class ==============
@@ -1077,7 +1078,6 @@ namespace operations_research {
 // - MakeVariableDomainFilter()
 //
 // - TopPeriodicCheck()
-// - TopProgressPercent()
 // - PushState()
 // - PopState()
 //
@@ -1297,9 +1297,7 @@ namespace operations_research {
 
 // SearchMonitor.
 // Ignored:
-// - kNoProgress
 // - PeriodicCheck()
-// - ProgressPercent()
 // - Accept()
 // - Install()
 %feature("director") SearchMonitor;
@@ -1324,6 +1322,8 @@ namespace operations_research {
 %unignore SearchMonitor::LocalOptimum;
 %unignore SearchMonitor::AcceptDelta;
 %unignore SearchMonitor::AcceptNeighbor;
+%unignore SearchMonitor::ProgressPercent;
+%unignore SearchMonitor::kNoProgress;
 %rename (solver) SearchMonitor::solver;
 %feature("nodirector") SearchMonitor::solver;
 
@@ -1822,7 +1822,7 @@ namespace operations_research {
 // - Empty()
 // - Copy()
 // - elements()
-// - All Element() method taking (const V* const var)
+// - All Element() method taking (const V* var)
 // - operator==()
 // - operator!=()
 %unignore AssignmentContainer;

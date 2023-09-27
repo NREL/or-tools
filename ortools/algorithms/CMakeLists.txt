@@ -12,10 +12,7 @@
 # limitations under the License.
 
 file(GLOB _SRCS "*.h" "*.cc")
-list(REMOVE_ITEM _SRCS
-  ${CMAKE_CURRENT_SOURCE_DIR}/hungarian_test.cc
-  ${CMAKE_CURRENT_SOURCE_DIR}/hungarian_test.h
-  )
+list(FILTER _SRCS EXCLUDE REGEX "/[^/]*_test\\.cc$")
 
 set(NAME ${PROJECT_NAME}_algorithms)
 

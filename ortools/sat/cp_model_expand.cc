@@ -23,8 +23,10 @@
 #include "absl/container/btree_map.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/meta/type_traits.h"
 #include "absl/strings/str_cat.h"
-#include "absl/types/span.h"
 #include "ortools/base/integral_types.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/stl_util.h"
@@ -1036,12 +1038,17 @@ void ProcessOneCompressedColumn(
       any_values_literals.push_back(tuple_literals[i]);
       continue;
     }
-    ConstraintProto* clause = context->working_model->add_constraints();
-    clause->add_enforcement_literal(tuple_literals[i]);
+
+    ConstraintProto* ct = context->working_model->add_constraints();
+    ct->add_enforcement_literal(tuple_literals[i]);
+
+    // It is slightly better to use a bool_and if size is 1 instead of
+    // reconverting it at a later stage.
+    auto* literals =
+        values[i].size() == 1 ? ct->mutable_bool_and() : ct->mutable_bool_or();
     for (const int64_t v : values[i]) {
       DCHECK(context->DomainContains(variable, v));
-      clause->mutable_bool_or()->add_literals(
-          context->GetOrCreateVarValueEncoding(variable, v));
+      literals->add_literals(context->GetOrCreateVarValueEncoding(variable, v));
       pairs.emplace_back(v, tuple_literals[i]);
     }
   }
@@ -1158,9 +1165,11 @@ bool ReduceTableInPresenceOfUniqueVariableWithCosts(
   std::vector<int> deleted_vars;
   for (int var_index = 0; var_index < num_vars; ++var_index) {
     const int var = (*vars)[var_index];
+
     // We do not use VariableWithCostIsUniqueAndRemovable() since this one
     // return false if the objective is constraining but we don't care here.
-    if (context->VariableWithCostIsUniqueAndRemovable(var)) {
+    // Our transformation also do not loose solutions.
+    if (context->VariableWithCostIsUnique(var)) {
       context->UpdateRuleStats("table: removed unused column with cost");
       only_here_and_in_objective[var_index] = true;
       objective_coeffs[var_index] =
@@ -1169,7 +1178,7 @@ bool ReduceTableInPresenceOfUniqueVariableWithCosts(
       context->RemoveVariableFromObjective(var);
       context->MarkVariableAsRemoved(var);
       deleted_vars.push_back(var);
-    } else if (context->VariableIsUniqueAndRemovable(var)) {
+    } else if (context->VarToConstraints(var).size() == 1) {
       // If there is no cost, we can remove that variable using the same code by
       // just setting the cost to zero.
       context->UpdateRuleStats("table: removed unused column");
@@ -1266,27 +1275,36 @@ bool ReduceTableInPresenceOfUniqueVariableWithCosts(
   // This comes from the WCSP litterature. Basically, if by fixing a variable to
   // a value, we have only tuples with a non-zero cost, we can substract the
   // minimum cost of these tuples and transfer it to the variable cost.
-  for (int var_index = 0; var_index < new_vars.size(); ++var_index) {
-    absl::flat_hash_map<int64_t, int64_t> value_to_min_cost;
-    const int num_tuples = tuples->size();
-    for (int i = 0; i < num_tuples; ++i) {
-      const int64_t v = (*tuples)[i][var_index];
-      const int64_t cost = (*tuples)[i].back();
-      auto insert = value_to_min_cost.insert({v, cost});
-      if (!insert.second) {
-        insert.first->second = std::min(insert.first->second, cost);
+  //
+  // TODO(user): Doing this before table compression can prevent good
+  // compression. We should probably exploit this during compression to make
+  // sure we compress as much as possible, and once compressed, do it again. Or
+  // do it in a more general IP settings when one iterals implies that a set of
+  // literals with >0 cost are in EXO. We can transfer the min of their cost to
+  // that Boolean.
+  if (/*DISABLES CODE*/ (false)) {
+    for (int var_index = 0; var_index < new_vars.size(); ++var_index) {
+      absl::flat_hash_map<int64_t, int64_t> value_to_min_cost;
+      const int num_tuples = tuples->size();
+      for (int i = 0; i < num_tuples; ++i) {
+        const int64_t v = (*tuples)[i][var_index];
+        const int64_t cost = (*tuples)[i].back();
+        auto insert = value_to_min_cost.insert({v, cost});
+        if (!insert.second) {
+          insert.first->second = std::min(insert.first->second, cost);
+        }
       }
-    }
-    for (int i = 0; i < num_tuples; ++i) {
-      const int64_t v = (*tuples)[i][var_index];
-      (*tuples)[i].back() -= value_to_min_cost.at(v);
-    }
-    for (const auto entry : value_to_min_cost) {
-      if (entry.second == 0) continue;
-      context->UpdateRuleStats("table: transferred cost to encoding");
-      const int value_literal = context->GetOrCreateVarValueEncoding(
-          new_vars[var_index], entry.first);
-      context->AddLiteralToObjective(value_literal, entry.second);
+      for (int i = 0; i < num_tuples; ++i) {
+        const int64_t v = (*tuples)[i][var_index];
+        (*tuples)[i].back() -= value_to_min_cost.at(v);
+      }
+      for (const auto entry : value_to_min_cost) {
+        if (entry.second == 0) continue;
+        context->UpdateRuleStats("table: transferred cost to encoding");
+        const int value_literal = context->GetOrCreateVarValueEncoding(
+            new_vars[var_index], entry.first);
+        context->AddLiteralToObjective(value_literal, entry.second);
+      }
     }
   }
 

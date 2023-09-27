@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "ortools/base/integral_types.h"
@@ -94,6 +95,14 @@ std::function<BooleanOrIntegerLiteral()> InstrumentSearchStrategy(
     const std::function<BooleanOrIntegerLiteral()>& instrumented_strategy,
     Model* model);
 
+// Returns all the named set of parameters known to the solver. This include our
+// default strategies like "max_lp", "core", etc... It is visible here so that
+// this can be reused by parameter validation.
+//
+// Usually, named strategies just override a few field from the base_params.
+absl::flat_hash_map<std::string, SatParameters> GetNamedParameters(
+    const SatParameters& base_params);
+
 // Returns up to base_params.num_workers() different parameters.
 // We do not always return num_worker parameters to leave room for strategies
 // like LNS that do not consume a full worker and can always be interleaved.
@@ -105,6 +114,16 @@ std::vector<SatParameters> GetDiverseSetOfParameters(
 std::vector<SatParameters> GetFirstSolutionParams(
     const SatParameters& base_params, const CpModelProto& cp_model,
     int num_params_to_generate);
+
+// Returns a vector of num_params_to_generate set of parameters to specify
+// solvers that cooperatively explore a search tree.
+std::vector<SatParameters> GetWorkSharingParams(
+    const SatParameters& base_params, const CpModelProto& cp_model,
+    int num_params_to_generate);
+
+// This generates a valid random seed (base_seed + delta) without overflow.
+// We assume |delta| is small.
+int ValidSumSeed(int base_seed, int delta);
 
 }  // namespace sat
 }  // namespace operations_research

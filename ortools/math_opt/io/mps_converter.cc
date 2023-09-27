@@ -17,12 +17,12 @@
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "ortools/base/status_macros.h"
 #include "ortools/linear_solver/linear_solver.pb.h"
 #include "ortools/linear_solver/model_exporter.h"
 #include "ortools/lp_data/mps_reader.h"
 #include "ortools/math_opt/io/proto_converter.h"
 #include "ortools/math_opt/model.pb.h"
-#include "ortools/util/file_util.h"
 
 namespace operations_research::math_opt {
 

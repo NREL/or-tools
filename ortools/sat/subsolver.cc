@@ -21,7 +21,9 @@
 #include <vector>
 
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/blocking_counter.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
@@ -40,11 +42,11 @@ namespace {
 // if no SubSolver can generate a new task.
 //
 // For now we use a really basic logic: call the least frequently called.
-int NextSubsolverToSchedule(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers,
-    const std::vector<int64_t>& num_generated_tasks) {
+int NextSubsolverToSchedule(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                            const std::vector<int64_t>& num_generated_tasks) {
   int best = -1;
   for (int i = 0; i < subsolvers.size(); ++i) {
+    if (subsolvers[i] == nullptr) continue;
     if (subsolvers[i]->TaskIsAvailable()) {
       if (best == -1 || num_generated_tasks[i] < num_generated_tasks[best]) {
         best = i;
@@ -55,17 +57,34 @@ int NextSubsolverToSchedule(
   return best;
 }
 
+void ClearSubsolversThatAreDone(
+    std::vector<std::unique_ptr<SubSolver>>& subsolvers) {
+  for (int i = 0; i < subsolvers.size(); ++i) {
+    if (subsolvers[i] == nullptr) continue;
+    if (subsolvers[i]->IsDone()) {
+      // We can free the memory used by this solver for good.
+      VLOG(1) << "Deleting " << subsolvers[i]->name();
+      subsolvers[i].reset();
+      continue;
+    }
+  }
+}
+
 void SynchronizeAll(const std::vector<std::unique_ptr<SubSolver>>& subsolvers) {
-  for (const auto& subsolver : subsolvers) subsolver->Synchronize();
+  for (const auto& subsolver : subsolvers) {
+    if (subsolver == nullptr) continue;
+    subsolver->Synchronize();
+  }
 }
 
 }  // namespace
 
-void SequentialLoop(const std::vector<std::unique_ptr<SubSolver>>& subsolvers) {
+void SequentialLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers) {
   int64_t task_id = 0;
   std::vector<int64_t> num_generated_tasks(subsolvers.size(), 0);
   while (true) {
     SynchronizeAll(subsolvers);
+    ClearSubsolversThatAreDone(subsolvers);
     const int best = NextSubsolverToSchedule(subsolvers, num_generated_tasks);
     if (best == -1) break;
     num_generated_tasks[best]++;
@@ -77,23 +96,20 @@ void SequentialLoop(const std::vector<std::unique_ptr<SubSolver>>& subsolvers) {
 
 // On portable platform, we don't support multi-threading for now.
 
-void NonDeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers,
-    int num_threads) {
+void NonDeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                          int num_threads) {
   SequentialLoop(subsolvers);
 }
 
-void DeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers, int num_threads,
-    int batch_size) {
+void DeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                       int num_threads, int batch_size) {
   SequentialLoop(subsolvers);
 }
 
 #else  // __PORTABLE_PLATFORM__
 
-void DeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers, int num_threads,
-    int batch_size) {
+void DeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                       int num_threads, int batch_size) {
   CHECK_GT(num_threads, 0);
   CHECK_GT(batch_size, 0);
   if (batch_size == 1) {
@@ -103,46 +119,70 @@ void DeterministicLoop(
   int64_t task_id = 0;
   std::vector<int64_t> num_generated_tasks(subsolvers.size(), 0);
   std::vector<std::function<void()>> to_run;
+  std::vector<int> indices;
+  std::vector<double> timing;
   to_run.reserve(batch_size);
+  ThreadPool pool("DeterministicLoop", num_threads);
+  pool.StartWorkers();
   while (true) {
     SynchronizeAll(subsolvers);
+    ClearSubsolversThatAreDone(subsolvers);
 
     // We first generate all task to run in this batch.
     // Note that we can't start the task right away since if a task finish
     // before we schedule everything, we will not be deterministic.
+    to_run.clear();
+    indices.clear();
     for (int t = 0; t < batch_size; ++t) {
       const int best = NextSubsolverToSchedule(subsolvers, num_generated_tasks);
       if (best == -1) break;
       num_generated_tasks[best]++;
       to_run.push_back(subsolvers[best]->GenerateTask(task_id++));
+      indices.push_back(best);
     }
     if (to_run.empty()) break;
 
-    // TODO(user): We could reuse the same ThreadPool as long as we wait for all
-    // the task in a batch to finish before scheduling new ones. Not sure how
-    // to easily do that, so for now we just recreate the pool for each to_run.
-    ThreadPool pool("DeterministicLoop", num_threads);
-    pool.StartWorkers();
-    for (auto& f : to_run) {
-      pool.Schedule(std::move(f));
+    // Schedule each task.
+    timing.resize(to_run.size());
+    absl::BlockingCounter blocking_counter(static_cast<int>(to_run.size()));
+    for (int i = 0; i < to_run.size(); ++i) {
+      pool.Schedule(
+          [i, f = std::move(to_run[i]), &timing, &blocking_counter]() {
+            WallTimer timer;
+            timer.Start();
+            f();
+            timing[i] = timer.Get();
+            blocking_counter.DecrementCount();
+          });
     }
-    to_run.clear();
+
+    // Wait for all tasks of this batch to be done before scheduling another
+    // batch.
+    blocking_counter.Wait();
+
+    // Update times.
+    for (int i = 0; i < to_run.size(); ++i) {
+      subsolvers[indices[i]]->AddTaskDuration(timing[i]);
+    }
   }
 }
 
-void NonDeterministicLoop(
-    const std::vector<std::unique_ptr<SubSolver>>& subsolvers,
-    int num_threads) {
+void NonDeterministicLoop(std::vector<std::unique_ptr<SubSolver>>& subsolvers,
+                          const int num_threads) {
   CHECK_GT(num_threads, 0);
   if (num_threads == 1) {
     return SequentialLoop(subsolvers);
   }
 
-  // The mutex will protect these two fields. This is used to only keep
-  // num_threads task in-flight and detect when the search is done.
+  // The mutex guards num_in_flight. This is used to detect when the search is
+  // done.
   absl::Mutex mutex;
-  absl::CondVar thread_available_condition;
-  int num_scheduled_and_not_done = 0;
+  int num_in_flight = 0;  // Guarded by `mutex`.
+  // Predicate to be used with absl::Condition to detect that num_in_flight <
+  // num_threads. Must only be called while locking `mutex`.
+  const auto num_in_flight_lt_num_threads = [&num_in_flight, num_threads]() {
+    return num_in_flight < num_threads;
+  };
 
   ThreadPool pool("NonDeterministicLoop", num_threads);
   pool.StartWorkers();
@@ -153,21 +193,38 @@ void NonDeterministicLoop(
   int64_t task_id = 0;
   std::vector<int64_t> num_generated_tasks(subsolvers.size(), 0);
   while (true) {
+    // Set to true if no task is pending right now.
     bool all_done = false;
     {
-      absl::MutexLock mutex_lock(&mutex);
+      // Wait if num_in_flight == num_threads.
+      const bool condition = mutex.LockWhenWithTimeout(
+          absl::Condition(&num_in_flight_lt_num_threads),
+          absl::Milliseconds(100));
+
+      // To support some "advanced" cancelation of subsolve, we still call
+      // synchronize every 0.1 seconds even if there is no worker available.
+      //
+      // TODO(user): We could also directly register callback to set stopping
+      // Boolean to false in a few places.
+      if (!condition) {
+        mutex.Unlock();
+        SynchronizeAll(subsolvers);
+        continue;
+      }
 
       // The stopping condition is that we do not have anything else to generate
       // once all the task are done and synchronized.
-      if (num_scheduled_and_not_done == 0) all_done = true;
-
-      // Wait if num_scheduled_and_not_done == num_threads.
-      if (num_scheduled_and_not_done == num_threads) {
-        thread_available_condition.Wait(&mutex);
-      }
+      if (num_in_flight == 0) all_done = true;
+      mutex.Unlock();
     }
 
     SynchronizeAll(subsolvers);
+    {
+      // We need to do that while holding the lock since substask below might
+      // be currently updating the time via AddTaskDuration().
+      const absl::MutexLock mutex_lock(&mutex);
+      ClearSubsolversThatAreDone(subsolvers);
+    }
     const int best = NextSubsolverToSchedule(subsolvers, num_generated_tasks);
     if (best == -1) {
       if (all_done) break;
@@ -184,20 +241,22 @@ void NonDeterministicLoop(
     num_generated_tasks[best]++;
     {
       absl::MutexLock mutex_lock(&mutex);
-      num_scheduled_and_not_done++;
+      num_in_flight++;
     }
     std::function<void()> task = subsolvers[best]->GenerateTask(task_id++);
     const std::string name = subsolvers[best]->name();
-    pool.Schedule([task, num_threads, name, &mutex, &num_scheduled_and_not_done,
-                   &thread_available_condition]() {
+    pool.Schedule([task = std::move(task), name, best, &subsolvers, &mutex,
+                   &num_in_flight]() {
+      WallTimer timer;
+      timer.Start();
       task();
 
-      absl::MutexLock mutex_lock(&mutex);
-      VLOG(1) << name << " done.";
-      num_scheduled_and_not_done--;
-      if (num_scheduled_and_not_done == num_threads - 1) {
-        thread_available_condition.SignalAll();
+      const absl::MutexLock mutex_lock(&mutex);
+      VLOG(1) << name << " done in " << timer.Get() << "s.";
+      if (subsolvers[best] != nullptr) {
+        subsolvers[best]->AddTaskDuration(timer.Get());
       }
+      num_in_flight--;
     });
   }
 }

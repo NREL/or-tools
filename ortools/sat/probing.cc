@@ -15,10 +15,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <utility>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "ortools/base/logging.h"
 #include "ortools/base/strong_vector.h"
@@ -591,20 +593,20 @@ bool FailedLiteralProbingRound(ProbingOptions options, Model* model) {
         }
       }
 
-      // Fix next_decision to false if not already done.
+      // Fix `next_decision` to `false` if not already done.
       //
-      // Even if we fixed something at evel zero, next_decision might not be
+      // Even if we fixed something at level zero, next_decision might not be
       // fixed! But we can fix it. It can happen because when we propagate
-      // with clauses, we might have a => b but not not(b) => not(a). Like a
-      // => b and clause (not(a), not(b), c), propagating a will set c, but
-      // propagating not(c) will not do anything.
+      // with clauses, we might have `a => b` but not `not(b) => not(a)`. Like
+      // `a => b` and clause `(not(a), not(b), c)`, propagating `a` will set
+      // `c`, but propagating `not(c)` will not do anything.
       //
       // We "delay" the fixing if we are not at level zero so that we can
       // still reuse the current propagation work via tree look.
       //
       // TODO(user): Can we be smarter here? Maybe we can still fix the
-      // literal without going back to level zero by simply enqueing it with
-      // no reason? it will be bactracked over, but we will still lazily fix
+      // literal without going back to level zero by simply enqueuing it with
+      // no reason? it will be backtracked over, but we will still lazily fix
       // it later.
       if (sat_solver->CurrentDecisionLevel() != 0 ||
           assignment.LiteralIsFalse(Literal(next_decision))) {

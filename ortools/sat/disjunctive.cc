@@ -15,10 +15,9 @@
 
 #include <algorithm>
 #include <functional>
-#include <utility>
 #include <vector>
 
-#include "ortools/base/logging.h"
+#include "absl/log/check.h"
 #include "ortools/sat/all_different.h"
 #include "ortools/sat/integer.h"
 #include "ortools/sat/integer_expr.h"
@@ -74,8 +73,9 @@ std::function<void(Model*)> Disjunctive(
     if (/*DISABLES_CODE*/ (false)) {
       const AffineExpression one(IntegerValue(1));
       std::vector<AffineExpression> demands(intervals.size(), one);
-      SchedulingDemandHelper* demands_helper = model->TakeOwnership(
-          new SchedulingDemandHelper(demands, helper, model));
+      SchedulingDemandHelper* demands_helper =
+          model->GetOrCreate<IntervalsRepository>()->GetOrCreateDemandHelper(
+              helper, demands);
 
       TimeTablingPerTask* timetable =
           new TimeTablingPerTask(one, helper, demands_helper, model);
